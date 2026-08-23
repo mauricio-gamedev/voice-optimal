@@ -101,7 +101,7 @@ internal fun ShizukuIntegrationPanel(
         ) {
             Text("Game Voice Protection", style = MaterialTheme.typography.titleLarge)
             Text(
-                "Alpha17 • proteção avançada + acabamento",
+                "Alpha18 • adaptive voice chain",
                 style = MaterialTheme.typography.labelLarge,
                 color = MaterialTheme.colorScheme.primary,
             )
@@ -122,13 +122,16 @@ internal fun ShizukuIntegrationPanel(
             healthMetrics(report.gameBridgeStatus)?.let { (protected, failed) ->
                 Text("Sessões protegidas: $protected • falhas confirmadas: $failed")
             }
+            advancedMetric(report.gameBridgeStatus)?.let {
+                Text("Sessões com aprimoramento extra: $it")
+            }
 
             Text(
                 when {
                     report.gameBridgeEnabled && protection.contains("CONFIRMADA") ->
-                        "O jogo abriu o microfone com Noise Suppression dentro da cadeia real. A UI pode ser fechada; o daemon Shizuku continua em segundo plano."
+                        "A cadeia real do jogo foi verificada. Se aparecer NS+AEC, NS+AGC ou NS+VENDOR, o aprimoramento extra também entrou de verdade."
                     report.gameBridgeEnabled ->
-                        "Proteção armada. Pode abrir o jogo e usar o chat de voz; o daemon detecta a sessão automaticamente."
+                        "Proteção armada. Pode abrir o jogo e usar o chat de voz; o daemon detecta e valida a cadeia automaticamente."
                     else ->
                         "Escolha um perfil e ative antes de abrir o chat de voz do jogo."
                 },
@@ -136,7 +139,7 @@ internal fun ShizukuIntegrationPanel(
             )
 
             Text("Perfil", style = MaterialTheme.typography.titleMedium)
-            Text("${profileLabel(report.gameEnhancementProfile)}", color = MaterialTheme.colorScheme.primary)
+            Text(profileLabel(report.gameEnhancementProfile), color = MaterialTheme.colorScheme.primary)
 
             val bridgeReady = report.state == ShizukuBridgeState.READY_SHELL ||
                 report.state == ShizukuBridgeState.READY_ROOT
@@ -191,7 +194,7 @@ internal fun ShizukuIntegrationPanel(
             }
 
             Text(
-                "Segurança: todos os efeitos são transitórios. O ClearMic não edita /system, /vendor ou audio_effects e libera os defaults ao desativar a proteção.",
+                "Segurança: efeitos extras do perfil Forte só são tentados quando o firmware os anuncia como preprocessadores de voz compatíveis. Efeitos de saída como EQ, bass, reverb e virtualizer são bloqueados. Tudo é transitório e liberado ao desativar.",
                 style = MaterialTheme.typography.bodySmall,
             )
         }
@@ -224,7 +227,7 @@ private fun TechnicalDetails(
         }
 
         Text("Status bruto do daemon:", style = MaterialTheme.typography.labelLarge)
-        report.gameBridgeStatus.lineSequence().take(10).forEach {
+        report.gameBridgeStatus.lineSequence().take(12).forEach {
             Text(it, style = MaterialTheme.typography.bodySmall)
         }
 
@@ -305,15 +308,18 @@ private fun healthMetrics(status: String): Pair<Int, Int>? {
     return (match.groupValues[1].toIntOrNull() ?: 0) to (match.groupValues[2].toIntOrNull() ?: 0)
 }
 
+private fun advancedMetric(status: String): Int? =
+    Regex("advanced=(\\d+)").find(status)?.groupValues?.getOrNull(1)?.toIntOrNull()
+
 private fun profileDescription(profile: String): String = when (profile) {
     "LIGHT" -> "Leve: Noise Suppression somente. Máxima preservação do timbre."
-    "STRONG" -> "Forte: NS + AEC em comunicação + AGC quando o firmware realmente disponibilizar."
-    else -> "Balanceado: NS sempre + AEC apenas em VOICE_COMMUNICATION. Recomendado."
+    "STRONG" -> "Forte adaptativo: NS + AEC/AGC quando apropriados e até dois preprocessadores vendor de voz considerados seguros. Extras só contam se aparecerem na cadeia real do jogo."
+    else -> "Balanceado: NS sempre + AEC apenas em VOICE_COMMUNICATION. Recomendado para estabilidade."
 }
 
 private fun profileLabel(profile: String): String = when (profile) {
     "LIGHT" -> "Leve • NS"
-    "STRONG" -> "Forte • NS/AEC/AGC quando disponível"
+    "STRONG" -> "Forte adaptativo • NS + extras verificados"
     else -> "Balanceado • NS + AEC em comunicação"
 }
 

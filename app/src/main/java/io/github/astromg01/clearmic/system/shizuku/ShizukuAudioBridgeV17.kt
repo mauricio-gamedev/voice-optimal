@@ -15,13 +15,14 @@ import rikka.shizuku.Shizuku
 import java.util.Locale
 import java.util.concurrent.atomic.AtomicBoolean
 
-/** Alpha17 bridge: persistent profile, UserService v8 and compact protection-first diagnostics. */
+/** Alpha18 bridge: persistent profile, auto-rearm, UserService v9 and protection-first diagnostics. */
 class ShizukuAudioBridgeV17(context: Context) {
     companion object {
         private const val PERMISSION_REQUEST_CODE = 4117
-        private const val USER_SERVICE_VERSION = 8
+        private const val USER_SERVICE_VERSION = 9
         private const val PREFS = "clearmic_game_enhance"
         private const val KEY_PROFILE = "profile"
+        private const val KEY_ARMED = "protection_armed"
         private const val MAX_HINTS = 6
     }
 
@@ -36,6 +37,9 @@ class ShizukuAudioBridgeV17(context: Context) {
 
     private val savedProfile: String
         get() = normalizeProfile(prefs.getString(KEY_PROFILE, "BALANCED").orEmpty())
+
+    private val shouldRearm: Boolean
+        get() = prefs.getBoolean(KEY_ARMED, false)
 
     private val serviceArgs by lazy {
         Shizuku.UserServiceArgs(
@@ -58,7 +62,11 @@ class ShizukuAudioBridgeV17(context: Context) {
                 state = ShizukuBridgeState.NOT_RUNNING,
                 gameBridgeEnabled = false,
                 gameEnhancementProfile = savedProfile,
-                recommendation = "Shizuku parou. Inicie o Shizuku novamente para reativar a proteção de jogos.",
+                recommendation = if (shouldRearm) {
+                    "Shizuku parou. A proteção será rearmada automaticamente quando o Binder voltar."
+                } else {
+                    "Shizuku parou. Inicie o Shizuku novamente para usar a proteção de jogos."
+                },
             )
         )
     }
@@ -83,6 +91,9 @@ class ShizukuAudioBridgeV17(context: Context) {
                 val running = status.startsWith("ENABLED") || status.startsWith("ACTIVE")
                 if (!running) {
                     runCatching { remote?.setGameEnhancementProfile(savedProfile) }
+                    if (shouldRearm) {
+                        runCatching { remote?.setGameBridgeEnabled(true) }
+                    }
                 }
                 runDiagnostics()
             }
@@ -174,6 +185,7 @@ class ShizukuAudioBridgeV17(context: Context) {
                 val status = service.setGameBridgeEnabled(enabled).orEmpty()
                 val snapshot = service.getActiveRecordingSnapshot().orEmpty()
                 val actualEnabled = enabled && !status.startsWith("ERROR")
+                prefs.edit().putBoolean(KEY_ARMED, actualEnabled).apply()
                 ShizukuAudioRuntime.publish(
                     ShizukuAudioRuntime.report.value.copy(
                         gameBridgeEnabled = actualEnabled,
@@ -302,7 +314,7 @@ class ShizukuAudioBridgeV17(context: Context) {
                     verdict = verdict,
                     recommendation = when (verdict) {
                         GameBridgeVerdict.ROUTING_PERMISSION_CANDIDATE,
-                        GameBridgeVerdict.ROOT_SYSTEM_BRIDGE_READY -> "Game Voice Protection pronta. O status principal mostra apenas efeitos realmente verificados na sessão do jogo."
+                        GameBridgeVerdict.ROOT_SYSTEM_BRIDGE_READY -> "Game Voice Protection pronta. O perfil Forte agora testa uma cadeia adaptativa vendor segura e só confirma o que aparece na sessão real."
                         GameBridgeVerdict.DIAGNOSTICS_ONLY -> "Shizuku conectado, mas faltam permissões para registrar efeitos de entrada."
                         GameBridgeVerdict.SHIZUKU_NOT_READY -> "Inicie o Shizuku."
                     },

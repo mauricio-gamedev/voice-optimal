@@ -19,11 +19,26 @@ final class SourceDefaultNsController {
     static final String PROFILE_STRONG = "STRONG";
 
     private static final UUID NULL_EFFECT_UUID = new UUID(0L, 0L);
+    private static final int MAX_VENDOR_CANDIDATES = 2;
+
+    private static final String[] SAFE_VENDOR_KEYWORDS = {
+            "voice", "speech", "clarity", "clear voice", "denoise", "noise reduction",
+            "noise cancel", "wind", "beam", "dereverb", "de-reverb", "preprocess",
+            "pre-process", "voice enhance", "speech enhance"
+    };
+
+    private static final String[] BLOCKED_VENDOR_KEYWORDS = {
+            "equalizer", "bass", "virtualizer", "reverb", "loudness", "visualizer",
+            "spatial", "haptic", "music", "surround", "volume", "compressor", "limiter"
+    };
 
     private final List<Object> defaults = new ArrayList<>();
+    private final List<String> activeVendorNames = new ArrayList<>();
     private String profile = PROFILE_BALANCED;
     private String status = "SOURCE_DEFAULT: disabled";
     private int registeredNoiseSuppressors;
+    private int registeredVendorEnhancers;
+    private String vendorInventory = "none";
 
     void setProfile(String requested) {
         profile = normalizeProfile(requested);
@@ -41,11 +56,28 @@ final class SourceDefaultNsController {
         return registeredNoiseSuppressors > 0;
     }
 
+    boolean hasVendorEnhancerReady() {
+        return registeredVendorEnhancers > 0;
+    }
+
+    String verifiedVendorEffects(String effectsText) {
+        if (effectsText == null || effectsText.isEmpty() || activeVendorNames.isEmpty()) return "";
+        String lower = effectsText.toLowerCase(Locale.ROOT);
+        List<String> found = new ArrayList<>();
+        for (String name : activeVendorNames) {
+            if (lower.contains(name.toLowerCase(Locale.ROOT)) && !found.contains(name)) found.add(name);
+        }
+        return String.join(",", found);
+    }
+
     String enable() {
         releaseInternal(false);
         registeredNoiseSuppressors = 0;
+        registeredVendorEnhancers = 0;
+        activeVendorNames.clear();
 
         Map<UUID, List<UUID>> implementations = effectImplementations();
+        AudioEffect.Descriptor[] descriptors = safeQueryEffects();
         List<String> results = new ArrayList<>();
 
         if (registerEffect("NS", AudioEffect.EFFECT_TYPE_NS, MediaRecorder.AudioSource.MIC,
@@ -65,11 +97,40 @@ final class SourceDefaultNsController {
                     implementations, 80, results, false);
             registerEffect("AGC", AudioEffect.EFFECT_TYPE_AGC, MediaRecorder.AudioSource.VOICE_COMMUNICATION,
                     implementations, 80, results, false);
+
+            List<AudioEffect.Descriptor> vendorCandidates = safeVendorVoiceCandidates(descriptors);
+            vendorInventory = describeVendorCandidates(vendorCandidates);
+            int priority = 70;
+            for (int i = 0; i < vendorCandidates.size() && i < MAX_VENDOR_CANDIDATES; i++) {
+                AudioEffect.Descriptor descriptor = vendorCandidates.get(i);
+                boolean loadedRecognition = registerConcreteVendor(
+                        descriptor,
+                        MediaRecorder.AudioSource.VOICE_RECOGNITION,
+                        priority,
+                        results
+                );
+                boolean loadedCommunication = registerConcreteVendor(
+                        descriptor,
+                        MediaRecorder.AudioSource.VOICE_COMMUNICATION,
+                        priority,
+                        results
+                );
+                if (loadedRecognition || loadedCommunication) {
+                    registeredVendorEnhancers++;
+                    String name = compactName(descriptor.name);
+                    if (!activeVendorNames.contains(name)) activeVendorNames.add(name);
+                }
+                priority = Math.max(50, priority - 5);
+            }
+        } else {
+            vendorInventory = "strong-only";
         }
 
         status = "SOURCE_DEFAULT[" + profile + "]: " + String.join(" | ", results)
                 + " • active=" + defaults.size()
-                + " • nsReady=" + registeredNoiseSuppressors + "/3";
+                + " • nsReady=" + registeredNoiseSuppressors + "/3"
+                + " • vendorLoaded=" + registeredVendorEnhancers
+                + " • vendorCandidates=" + vendorInventory;
         return status;
     }
 
@@ -91,7 +152,9 @@ final class SourceDefaultNsController {
             }
         }
         defaults.clear();
+        activeVendorNames.clear();
         registeredNoiseSuppressors = 0;
+        registeredVendorEnhancers = 0;
         if (updateStatus) status = "SOURCE_DEFAULT[" + profile + "]: disabled";
     }
 
@@ -144,9 +207,29 @@ final class SourceDefaultNsController {
         return false;
     }
 
+    private boolean registerConcreteVendor(
+            AudioEffect.Descriptor descriptor,
+            int source,
+            int priority,
+            List<String> results
+    ) {
+        if (descriptor == null || descriptor.uuid == null) return false;
+        String label = compactName(descriptor.name);
+        try {
+            Object effect = create(NULL_EFFECT_UUID, descriptor.uuid, priority, source);
+            defaults.add(effect);
+            results.add("VENDOR[" + label + "]@" + sourceName(source) + "=OK");
+            return true;
+        } catch (Throwable error) {
+            results.add("VENDOR[" + label + "]@" + sourceName(source) + "=skip:"
+                    + describe(unwrap(error)));
+            return false;
+        }
+    }
+
     private Map<UUID, List<UUID>> effectImplementations() {
         Map<UUID, List<UUID>> out = new HashMap<>();
-        AudioEffect.Descriptor[] descriptors = AudioEffect.queryEffects();
+        AudioEffect.Descriptor[] descriptors = safeQueryEffects();
         if (descriptors == null) return out;
 
         for (AudioEffect.Descriptor descriptor : descriptors) {
@@ -154,6 +237,43 @@ final class SourceDefaultNsController {
             out.computeIfAbsent(descriptor.type, ignored -> new ArrayList<>()).add(descriptor.uuid);
         }
         return out;
+    }
+
+    private AudioEffect.Descriptor[] safeQueryEffects() {
+        try {
+            return AudioEffect.queryEffects();
+        } catch (Throwable ignored) {
+            return null;
+        }
+    }
+
+    private List<AudioEffect.Descriptor> safeVendorVoiceCandidates(AudioEffect.Descriptor[] descriptors) {
+        List<AudioEffect.Descriptor> out = new ArrayList<>();
+        if (descriptors == null) return out;
+
+        for (AudioEffect.Descriptor descriptor : descriptors) {
+            if (descriptor == null || descriptor.uuid == null || descriptor.type == null) continue;
+            if (AudioEffect.EFFECT_TYPE_NS.equals(descriptor.type)
+                    || AudioEffect.EFFECT_TYPE_AEC.equals(descriptor.type)
+                    || AudioEffect.EFFECT_TYPE_AGC.equals(descriptor.type)) continue;
+
+            String name = safeLower(descriptor.name);
+            String implementor = safeLower(descriptor.implementor);
+            String combined = name + " " + implementor;
+            if (combined.contains("android open source project") || combined.contains("aosp")) continue;
+            if (containsAny(combined, BLOCKED_VENDOR_KEYWORDS)) continue;
+            if (!containsAny(combined, SAFE_VENDOR_KEYWORDS)) continue;
+            out.add(descriptor);
+        }
+        return out;
+    }
+
+    private String describeVendorCandidates(List<AudioEffect.Descriptor> candidates) {
+        if (candidates == null || candidates.isEmpty()) return "none";
+        List<String> names = new ArrayList<>();
+        int limit = Math.min(MAX_VENDOR_CANDIDATES, candidates.size());
+        for (int i = 0; i < limit; i++) names.add(compactName(candidates.get(i).name));
+        return String.join(",", names);
     }
 
     private Object create(UUID type, UUID uuid, int priority, int source) throws Exception {
@@ -168,6 +288,22 @@ final class SourceDefaultNsController {
         String normalized = value.trim().toUpperCase(Locale.ROOT);
         if (PROFILE_LIGHT.equals(normalized) || PROFILE_STRONG.equals(normalized)) return normalized;
         return PROFILE_BALANCED;
+    }
+
+    private static boolean containsAny(String text, String[] keys) {
+        if (text == null || text.isEmpty()) return false;
+        for (String key : keys) if (text.contains(key)) return true;
+        return false;
+    }
+
+    private static String safeLower(String value) {
+        return value == null ? "" : value.toLowerCase(Locale.ROOT);
+    }
+
+    private static String compactName(String value) {
+        if (value == null || value.trim().isEmpty()) return "unnamed";
+        String clean = value.trim().replace('|', '_').replace('\n', ' ');
+        return clean.length() > 28 ? clean.substring(0, 28) : clean;
     }
 
     private static Throwable unwrap(Throwable error) {
