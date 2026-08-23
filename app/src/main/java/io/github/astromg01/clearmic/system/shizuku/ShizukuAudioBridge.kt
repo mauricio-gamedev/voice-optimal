@@ -56,6 +56,7 @@ data class PrivilegedAudioReport(
     val recordingPackageHints: List<String> = emptyList(),
     val captureActivityHints: List<String> = emptyList(),
     val gameBridgeEnabled: Boolean = false,
+    val gameEnhancementProfile: String = "BALANCED",
     val gameBridgeStatus: String = "DISABLED",
     val activeRecordingSnapshot: String = "—",
     val verdict: GameBridgeVerdict = GameBridgeVerdict.SHIZUKU_NOT_READY,
@@ -76,7 +77,7 @@ object ShizukuAudioRuntime {
 class ShizukuAudioBridge(context: Context) {
     companion object {
         private const val PERMISSION_REQUEST_CODE = 4109
-        private const val USER_SERVICE_VERSION = 6
+        private const val USER_SERVICE_VERSION = 7
         private const val MAX_HINT_LINES = 8
     }
 
@@ -203,6 +204,27 @@ class ShizukuAudioBridge(context: Context) {
         evaluateBinderState(bindIfAllowed = true, forceScan = true)
     }
 
+    fun setGameEnhancementProfile(profile: String) {
+        val service = remote ?: return
+        val normalized = normalizeProfile(profile)
+        scope.launch {
+            runCatching {
+                val status = service.setGameEnhancementProfile(normalized).orEmpty()
+                ShizukuAudioRuntime.publish(
+                    currentBaseReport().copy(
+                        gameEnhancementProfile = if (status.startsWith("PROFILE_LOCKED")) {
+                            currentBaseReport().gameEnhancementProfile
+                        } else {
+                            normalized
+                        },
+                        gameBridgeStatus = status.ifBlank { "PROFILE: $normalized" },
+                        lastError = if (status.startsWith("ERROR")) status else null,
+                    )
+                )
+            }.onFailure { publishError("Falha ao alterar perfil de voz", it) }
+        }
+    }
+
     fun setGameBridgeEnabled(enabled: Boolean) {
         val service = remote
         if (service == null) {
@@ -218,6 +240,9 @@ class ShizukuAudioBridge(context: Context) {
 
         scope.launch {
             runCatching {
+                if (enabled) {
+                    service.setGameEnhancementProfile(currentBaseReport().gameEnhancementProfile)
+                }
                 val status = service.setGameBridgeEnabled(enabled).orEmpty()
                 val snapshot = service.getActiveRecordingSnapshot().orEmpty()
                 ShizukuAudioRuntime.publish(
@@ -228,7 +253,7 @@ class ShizukuAudioBridge(context: Context) {
                         lastError = if (status.startsWith("ERROR")) status else null,
                     )
                 )
-            }.onFailure { publishError("Falha ao alterar Game Native Effects", it) }
+            }.onFailure { publishError("Falha ao alterar Game Voice Enhance", it) }
         }
     }
 
@@ -242,11 +267,12 @@ class ShizukuAudioBridge(context: Context) {
                 ShizukuAudioRuntime.publish(
                     currentBaseReport().copy(
                         gameBridgeEnabled = enabled,
+                        gameEnhancementProfile = profileFromStatus(status, currentBaseReport().gameEnhancementProfile),
                         gameBridgeStatus = status.ifBlank { "—" },
                         activeRecordingSnapshot = snapshot.ifBlank { "—" },
                     )
                 )
-            }.onFailure { publishError("Falha ao ler Game Native Effects", it) }
+            }.onFailure { publishError("Falha ao ler Game Voice Enhance", it) }
         }
     }
 
@@ -339,6 +365,7 @@ class ShizukuAudioBridge(context: Context) {
                 val recordingSnapshot = service.getActiveRecordingSnapshot().orEmpty()
                 val gameStatus = service.getGameBridgeStatus().orEmpty()
                 val gameEnabled = gameStatus.startsWith("ENABLED") || gameStatus.startsWith("ACTIVE")
+                val currentProfile = profileFromStatus(gameStatus, currentBaseReport().gameEnhancementProfile)
 
                 val combined = listOf(audio, flinger, policy, configs, recordingSnapshot)
                     .joinToString("\n").lowercase(Locale.ROOT)
@@ -365,9 +392,9 @@ class ShizukuAudioBridge(context: Context) {
 
                 val recommendation = when (verdict) {
                     GameBridgeVerdict.ROOT_SYSTEM_BRIDGE_READY ->
-                        "Shizuku está em modo ROOT. O monitor Binder e o source-default NS alpha15 estão disponíveis."
+                        "Alpha16 pode usar perfis transitórios NS/AEC/AGC e verificar a cadeia real do jogo."
                     GameBridgeVerdict.ROUTING_PERMISSION_CANDIDATE ->
-                        "Alpha15 registra NS transitório por fonte antes do jogo abrir o microfone e verifica a cadeia real da sessão."
+                        "Alpha16 aplica perfis de voz antes da captura: NS sempre; AEC/AGC somente quando apropriados e disponíveis."
                     GameBridgeVerdict.DIAGNOSTICS_ONLY ->
                         "Shizuku funciona para diagnóstico, mas não recebeu permissão suficiente para controlar sessões de captura."
                     GameBridgeVerdict.SHIZUKU_NOT_READY -> "Inicie e autorize o Shizuku."
@@ -394,6 +421,7 @@ class ShizukuAudioBridge(context: Context) {
                         recordingPackageHints = packageHints,
                         captureActivityHints = captureHints,
                         gameBridgeEnabled = gameEnabled,
+                        gameEnhancementProfile = currentProfile,
                         gameBridgeStatus = gameStatus.ifBlank { "DISABLED" },
                         activeRecordingSnapshot = recordingSnapshot.ifBlank { "—" },
                         verdict = verdict,
@@ -448,6 +476,21 @@ class ShizukuAudioBridge(context: Context) {
     }
 
     private fun containsEffect(text: String, vararg keys: String): Boolean = keys.any { it in text }
+
+    private fun normalizeProfile(value: String): String = when (value.trim().uppercase(Locale.ROOT)) {
+        "LIGHT" -> "LIGHT"
+        "STRONG" -> "STRONG"
+        else -> "BALANCED"
+    }
+
+    private fun profileFromStatus(status: String, fallback: String): String {
+        val marker = "profile="
+        val index = status.indexOf(marker)
+        if (index < 0) return fallback
+        val value = status.substring(index + marker.length)
+            .takeWhile { it.isLetter() || it == '_' }
+        return normalizeProfile(value)
+    }
 
     private fun extractPackageHints(text: String): List<String> {
         val packageRegex = Regex("\\b[a-zA-Z][a-zA-Z0-9_]*(?:\\.[a-zA-Z0-9_]+){2,}\\b")
