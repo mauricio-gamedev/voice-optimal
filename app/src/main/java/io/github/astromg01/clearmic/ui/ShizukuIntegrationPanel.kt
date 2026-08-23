@@ -72,7 +72,7 @@ internal fun ShizukuIntegrationPanel(
                 AudioRuntime.state.value == EngineState.ERROR
 
             if (localReleased) {
-                handoffMessage = "Microfone local liberado. Ativando monitoramento das sessões do jogo…"
+                handoffMessage = "Microfone local liberado. Ativando monitor Binder das sessões do jogo…"
                 bridge.setGameBridgeEnabled(true)
                 delay(250L)
                 bridge.refreshGameBridgeStatus()
@@ -91,7 +91,7 @@ internal fun ShizukuIntegrationPanel(
         ) {
             Text("Shizuku — Game Audio Bridge", style = MaterialTheme.typography.titleMedium)
             Text(
-                "Alpha12 confirma que o AAudio local foi encerrado antes de o daemon assumir o monitoramento das sessões externas.",
+                "Alpha13 monitora as gravações diretamente pelo Binder IAudioService. O daemon não depende mais do AudioManager/Context do UserService para enxergar o jogo em segundo plano.",
                 style = MaterialTheme.typography.bodySmall,
             )
 
@@ -148,7 +148,7 @@ internal fun ShizukuIntegrationPanel(
                 Text("Sessões de gravação agora:", style = MaterialTheme.typography.labelLarge)
                 report.activeRecordingSnapshot
                     .lineSequence()
-                    .take(5)
+                    .take(7)
                     .forEach { Text(it, style = MaterialTheme.typography.bodySmall) }
             }
 
@@ -183,7 +183,7 @@ internal fun ShizukuIntegrationPanel(
                 }
 
                 Text(
-                    "Ao ativar, o alpha12 espera a captura local chegar a IDLE antes de ligar o daemon. O daemon observa MIC/VOICE_COMMUNICATION, tenta anexar Noise Suppressor e usa AEC somente em VOICE_COMMUNICATION. O último alvo externo detectado fica guardado no status mesmo depois que a sessão do jogo fecha.",
+                    "Ao ativar, o ClearMic espera o motor local chegar a IDLE. O daemon consulta IAudioService diretamente a cada 500 ms, observa MIC/VOICE_COMMUNICATION e tenta anexar Noise Suppressor; AEC só é tentado em VOICE_COMMUNICATION. O último alvo externo continua salvo depois que o jogo fecha a sessão.",
                     style = MaterialTheme.typography.bodySmall,
                 )
             }
@@ -218,7 +218,7 @@ internal fun ShizukuIntegrationPanel(
             }
 
             Text(
-                "Segurança: Game Native Effects é transitório. O alpha12 não faz remount, não edita audio_effects, não grava em /system ou /vendor e não altera política persistente de áudio.",
+                "Segurança: Game Native Effects é transitório. O alpha13 não faz remount, não edita audio_effects, não grava em /system ou /vendor e não altera política persistente de áudio.",
                 style = MaterialTheme.typography.bodySmall,
             )
         }
