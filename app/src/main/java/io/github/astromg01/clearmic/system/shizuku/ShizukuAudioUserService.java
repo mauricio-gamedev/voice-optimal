@@ -29,17 +29,16 @@ import java.util.concurrent.TimeUnit;
 /**
  * Runs inside Shizuku UserService as UID 2000 (ADB shell) or UID 0 (root/Sui).
  *
- * Alpha11 adds the first game-facing bridge. When Game Native Effects is enabled,
- * this daemon observes active recording sessions and attaches Android's own capture
- * preprocessors to eligible third-party microphone sessions. It never edits vendor
- * files, remounts partitions or changes persistent audio policy.
+ * Alpha12 hardens the game-facing bridge: the app waits for its own recorder to
+ * stop before enabling this daemon, while this service preserves the last external
+ * recording target/effect result so evidence is still visible after returning from a game.
  */
 @Keep
 public final class ShizukuAudioUserService extends IShizukuAudioService.Stub {
 
     private static final int MAX_OUTPUT_CHARS = 384 * 1024;
     private static final long COMMAND_TIMEOUT_SECONDS = 6L;
-    private static final long GAME_MONITOR_INTERVAL_MS = 1200L;
+    private static final long GAME_MONITOR_INTERVAL_MS = 500L;
     private static final String CLEARMIC_PACKAGE = "io.github.astromg01.clearmic";
 
     private final Object gameLock = new Object();
@@ -50,6 +49,7 @@ public final class ShizukuAudioUserService extends IShizukuAudioService.Stub {
     private volatile Thread gameMonitorThread;
     private volatile String gameBridgeStatus = "DISABLED";
     private volatile String lastRecordingSnapshot = "NO SNAPSHOT";
+    private volatile String lastExternalTarget = "LAST_EXTERNAL: none seen since enable";
 
     public ShizukuAudioUserService() {
     }
@@ -108,6 +108,7 @@ public final class ShizukuAudioUserService extends IShizukuAudioService.Stub {
                 gameBridgeStatus = "ERROR: Shizuku UserService Context unavailable";
                 return gameBridgeStatus;
             }
+            lastExternalTarget = "LAST_EXTERNAL: none seen since enable";
             gameBridgeEnabled = true;
             startGameMonitorIfNeeded();
             gameBridgeStatus = "ENABLED • waiting for an eligible game/voice recording session";
@@ -121,7 +122,7 @@ public final class ShizukuAudioUserService extends IShizukuAudioService.Stub {
 
     @Override
     public String getGameBridgeStatus() {
-        return gameBridgeStatus + "\n" + lastRecordingSnapshot;
+        return gameBridgeStatus + "\n" + lastExternalTarget + "\n" + lastRecordingSnapshot;
     }
 
     private void startGameMonitorIfNeeded() {
@@ -220,10 +221,12 @@ public final class ShizukuAudioUserService extends IShizukuAudioService.Stub {
             gameBridgeStatus = "ENABLED • no eligible unsilenced mic session"
                     + (silencedCount > 0 ? " • silenced sessions=" + silencedCount : "");
         } else {
+            String targetSummary = String.join(" | ", activeTargets)
+                    + (bundleSummary.isEmpty() ? "" : " • " + bundleSummary);
+            lastExternalTarget = "LAST_EXTERNAL: " + targetSummary;
             gameBridgeStatus = "ACTIVE • targets=" + activeTargets.size()
                     + " • effect sessions=" + attached
-                    + " • " + String.join(" | ", activeTargets)
-                    + (bundleSummary.isEmpty() ? "" : " • " + bundleSummary);
+                    + " • " + targetSummary;
         }
     }
 
@@ -252,8 +255,6 @@ public final class ShizukuAudioUserService extends IShizukuAudioService.Stub {
             }
         }
 
-        // AEC is only enabled on VOICE_COMMUNICATION. It is deliberately not forced
-        // onto generic MIC/camera sessions because that can color or distort non-call audio.
         if (source == MediaRecorder.AudioSource.VOICE_COMMUNICATION) {
             try {
                 if (AcousticEchoCanceler.isAvailable()) {
