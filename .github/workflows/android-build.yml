@@ -13,10 +13,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     env:
-      CLEARMIC_KEYSTORE_BASE64: ${{ secrets.CLEARMIC_KEYSTORE_BASE64 }}
-      CLEARMIC_KEYSTORE_PASSWORD: ${{ secrets.CLEARMIC_KEYSTORE_PASSWORD }}
-      CLEARMIC_KEY_ALIAS: ${{ secrets.CLEARMIC_KEY_ALIAS }}
-      CLEARMIC_KEY_PASSWORD: ${{ secrets.CLEARMIC_KEY_PASSWORD }}
+      HAS_RELEASE_SIGNING: ${{ secrets.CLEARMIC_KEYSTORE_BASE64 != '' }}
 
     steps:
       - name: Checkout
@@ -50,17 +47,22 @@ jobs:
           if-no-files-found: error
 
       - name: Decode permanent update keystore
-        if: ${{ env.CLEARMIC_KEYSTORE_BASE64 != '' }}
+        if: ${{ env.HAS_RELEASE_SIGNING == 'true' }}
+        env:
+          CLEARMIC_KEYSTORE_BASE64: ${{ secrets.CLEARMIC_KEYSTORE_BASE64 }}
         run: echo "$CLEARMIC_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/clearmic-update.jks"
 
       - name: Build signed release APK
-        if: ${{ env.CLEARMIC_KEYSTORE_BASE64 != '' }}
+        if: ${{ env.HAS_RELEASE_SIGNING == 'true' }}
         env:
           CLEARMIC_KEYSTORE_PATH: ${{ runner.temp }}/clearmic-update.jks
+          CLEARMIC_KEYSTORE_PASSWORD: ${{ secrets.CLEARMIC_KEYSTORE_PASSWORD }}
+          CLEARMIC_KEY_ALIAS: ${{ secrets.CLEARMIC_KEY_ALIAS }}
+          CLEARMIC_KEY_PASSWORD: ${{ secrets.CLEARMIC_KEY_PASSWORD }}
         run: gradle :app:assembleRelease --stacktrace
 
       - name: Upload signed release APK
-        if: ${{ env.CLEARMIC_KEYSTORE_BASE64 != '' }}
+        if: ${{ env.HAS_RELEASE_SIGNING == 'true' }}
         uses: actions/upload-artifact@v7
         with:
           name: ClearMic-signed-release
