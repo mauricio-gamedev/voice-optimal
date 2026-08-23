@@ -9,11 +9,18 @@ import androidx.core.content.ContextCompat
 class AudioEngine(
     private val context: Context,
 ) {
+    companion object {
+        private const val STATS_POLL_INTERVAL_MS = 750L
+        private const val NATIVE_SILENT_FRAME_THRESHOLD = 96_000L // ~2 seconds at 48 kHz
+    }
+
     private data class Activation(
         val backend: AudioBackend,
         val preprocessing: AndroidPreProcessing?,
         val effectStats: AudioStats,
     )
+
+    private val lifecycleLock = Any()
 
     @Volatile
     private var running = false
@@ -23,40 +30,47 @@ class AudioEngine(
     private var statsWorker: Thread? = null
     private var baseEffectStats = AudioStats()
 
+    @Volatile
+    private var fallbackReason: String? = null
+
     fun start() {
-        if (running) return
-        check(
-            ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
-                PackageManager.PERMISSION_GRANTED
-        ) { "RECORD_AUDIO permission is required" }
+        synchronized(lifecycleLock) {
+            if (running) return
+            check(
+                ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
+                    PackageManager.PERMISSION_GRANTED
+            ) { "RECORD_AUDIO permission is required" }
 
-        AudioRuntime.updateState(EngineState.STARTING)
+            AudioRuntime.updateState(EngineState.STARTING)
+            fallbackReason = null
 
-        val activation = runCatching {
-            activate(NativeAudioBackend())
-        }.getOrElse {
-            runCatching { activate(LegacyAudioBackend()) }
-                .getOrElse { fallbackError ->
-                    AudioRuntime.updateState(EngineState.ERROR)
-                    throw IllegalStateException("No audio backend could start", fallbackError)
-                }
+            val activation = runCatching {
+                activate(NativeAudioBackend())
+            }.getOrElse { nativeError ->
+                fallbackReason = "AAudio não abriu (${nativeError.javaClass.simpleName}); usando AudioRecord seguro."
+                runCatching { activate(LegacyAudioBackend()) }
+                    .getOrElse { fallbackError ->
+                        AudioRuntime.updateState(EngineState.ERROR)
+                        throw IllegalStateException("No audio backend could start", fallbackError)
+                    }
+            }
+
+            backend = activation.backend
+            effects = activation.preprocessing
+            baseEffectStats = activation.effectStats
+            running = true
+
+            publishSnapshot(activation.backend.snapshot())
+            AudioRuntime.updateState(EngineState.RUNNING)
+            startStatsPolling()
         }
-
-        backend = activation.backend
-        effects = activation.preprocessing
-        baseEffectStats = activation.effectStats
-        running = true
-
-        publishSnapshot(activation.backend.snapshot())
-        AudioRuntime.updateState(EngineState.RUNNING)
-        startStatsPolling()
     }
 
     private fun activate(candidate: AudioBackend): Activation {
         var preprocessing: AndroidPreProcessing? = null
         try {
             val sessionId = candidate.open()
-            val effectStats = if (sessionId > 0) {
+            val effectStats = if (candidate.allowPlatformPreprocessing && sessionId > 0) {
                 AndroidPreProcessing(sessionId).also { preprocessing = it }.enable()
             } else {
                 AudioStats()
@@ -79,11 +93,26 @@ class AudioEngine(
                 Process.setThreadPriority(Process.THREAD_PRIORITY_BACKGROUND)
                 while (running) {
                     val activeBackend = backend ?: break
-                    runCatching { activeBackend.snapshot() }
-                        .onSuccess { publishSnapshot(it) }
+                    val snapshot = runCatching { activeBackend.snapshot() }.getOrNull()
+
+                    if (snapshot != null) {
+                        val nativeSilent =
+                            activeBackend is NativeAudioBackend &&
+                                snapshot.capturedFrames >= NATIVE_SILENT_FRAME_THRESHOLD &&
+                                snapshot.rmsDb <= -119.5f &&
+                                snapshot.peak <= 0.00001f
+
+                        if (nativeSilent) {
+                            switchToLegacy(
+                                "AAudio entregou frames silenciosos; fallback automático ativado."
+                            )
+                        } else {
+                            publishSnapshot(snapshot)
+                        }
+                    }
 
                     try {
-                        Thread.sleep(200L)
+                        Thread.sleep(STATS_POLL_INTERVAL_MS)
                     } catch (_: InterruptedException) {
                         break
                     }
@@ -91,6 +120,41 @@ class AudioEngine(
             },
             "ClearMic-Stats",
         ).apply { start() }
+    }
+
+    private fun switchToLegacy(reason: String): Boolean = synchronized(lifecycleLock) {
+        if (!running || backend !is NativeAudioBackend) {
+            return@synchronized false
+        }
+
+        val oldBackend = backend
+        runCatching { effects?.release() }
+        effects = null
+        runCatching { oldBackend?.stop() }
+
+        val activation = runCatching { activate(LegacyAudioBackend()) }
+            .getOrElse {
+                backend = null
+                baseEffectStats = AudioStats()
+                running = false
+                fallbackReason = "$reason O fallback também falhou: ${it.javaClass.simpleName}."
+                AudioRuntime.updateStats(
+                    AudioStats(
+                        engineBackend = "Falha de captura",
+                        dspBackend = "Nenhum",
+                        fallbackReason = fallbackReason,
+                    )
+                )
+                AudioRuntime.updateState(EngineState.ERROR)
+                return@synchronized false
+            }
+
+        backend = activation.backend
+        effects = activation.preprocessing
+        baseEffectStats = activation.effectStats
+        fallbackReason = reason
+        publishSnapshot(activation.backend.snapshot())
+        true
     }
 
     private fun publishSnapshot(snapshot: BackendSnapshot) {
@@ -105,6 +169,7 @@ class AudioEngine(
                 noiseFloorDb = snapshot.noiseFloorDb.coerceAtLeast(-120f),
                 xrunCount = snapshot.xrunCount.coerceAtLeast(0),
                 capturedFrames = snapshot.capturedFrames.coerceAtLeast(0L),
+                fallbackReason = fallbackReason,
             )
         )
     }
@@ -115,14 +180,17 @@ class AudioEngine(
         running = false
 
         statsWorker?.interrupt()
-        statsWorker?.join(350)
+        statsWorker?.join(400)
         statsWorker = null
 
-        effects?.release()
-        effects = null
-        runCatching { backend?.stop() }
-        backend = null
-        baseEffectStats = AudioStats()
+        synchronized(lifecycleLock) {
+            effects?.release()
+            effects = null
+            runCatching { backend?.stop() }
+            backend = null
+            baseEffectStats = AudioStats()
+            fallbackReason = null
+        }
 
         AudioRuntime.updateStats(AudioStats())
         AudioRuntime.updateState(EngineState.IDLE)
