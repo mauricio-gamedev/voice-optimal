@@ -14,8 +14,7 @@ import java.util.concurrent.TimeUnit;
 
 /**
  * Runs inside Shizuku UserService as UID 2000 (ADB shell) or UID 0 (root/Sui).
- * This service is intentionally read-only in alpha09: every accepted probe is a
- * diagnostic command and no command changes audio routing or system files.
+ * Alpha09 is intentionally read-only: accepted probes only inspect system state.
  */
 @Keep
 public final class ShizukuAudioUserService extends IShizukuAudioService.Stub {
@@ -42,9 +41,7 @@ public final class ShizukuAudioUserService extends IShizukuAudioService.Stub {
 
         switch (probeKey) {
             case "identity":
-                command = "id; printf '\\nSELINUX='; getenforce 2>/dev/null || true; " +
-                        "printf '\\nMODEL='; getprop ro.product.model; " +
-                        "printf '\\nSDK='; getprop ro.build.version.sdk";
+                command = "id; getenforce 2>/dev/null || true; getprop ro.product.model; getprop ro.build.version.sdk";
                 break;
             case "audio":
                 command = "dumpsys audio 2>&1";
@@ -59,13 +56,7 @@ public final class ShizukuAudioUserService extends IShizukuAudioService.Stub {
                 command = "dumpsys appops --op RECORD_AUDIO 2>&1";
                 break;
             case "audio_configs":
-                command = "for d in /vendor/etc /odm/etc /system/etc /product/etc /system_ext/etc; do " +
-                        "for f in \\"$d\\"/audio_effects*.xml \\"$d\\"/audio_effects*.conf; do " +
-                        "[ -f \\"$f\\" ] || continue; " +
-                        "printf '\\n===== %s =====\\n' \\"$f\\"; " +
-                        "head -c 131072 \\"$f\\" 2>/dev/null || printf '[unreadable]\\n'; " +
-                        "done; done";
-                break;
+                return "CONFIG_PROBE_DEFERRED_TO_PASSIVE_SCANNER";
             default:
                 return "ERROR: probe not allowed";
         }
