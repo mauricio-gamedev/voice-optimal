@@ -28,9 +28,15 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import io.github.astromg01.clearmic.BuildConfig
@@ -38,7 +44,13 @@ import io.github.astromg01.clearmic.audio.AudioRuntime
 import io.github.astromg01.clearmic.audio.EngineState
 import io.github.astromg01.clearmic.service.BackgroundRuntime
 import io.github.astromg01.clearmic.service.GameMicService
+import io.github.astromg01.clearmic.system.BridgeReadiness
+import io.github.astromg01.clearmic.system.SystemCapabilityReport
+import io.github.astromg01.clearmic.system.SystemCapabilityScanner
 import io.github.astromg01.clearmic.ui.theme.ClearMicTheme
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlin.math.roundToInt
 
 class MainActivity : ComponentActivity() {
@@ -102,6 +114,26 @@ class MainActivity : ComponentActivity() {
         val state by AudioRuntime.state.collectAsState()
         val stats by AudioRuntime.stats.collectAsState()
         val background by BackgroundRuntime.stats.collectAsState()
+        val context = LocalContext.current.applicationContext
+        val systemScanner = remember(context) { SystemCapabilityScanner(context) }
+        val scanScope = rememberCoroutineScope()
+        var systemReport by remember { mutableStateOf<SystemCapabilityReport?>(null) }
+        var systemScanRunning by remember { mutableStateOf(false) }
+
+        fun runSystemScan() {
+            if (systemScanRunning) return
+            systemScanRunning = true
+            scanScope.launch {
+                systemReport = withContext(Dispatchers.IO) { systemScanner.scan() }
+                systemScanRunning = false
+            }
+        }
+
+        LaunchedEffect(systemScanner) {
+            systemScanRunning = true
+            systemReport = withContext(Dispatchers.IO) { systemScanner.scan() }
+            systemScanRunning = false
+        }
 
         val permissionLauncher = rememberLauncherForActivityResult(
             ActivityResultContracts.RequestMultiplePermissions()
@@ -128,7 +160,7 @@ class MainActivity : ComponentActivity() {
             ) {
                 Text("ClearMic", style = MaterialTheme.typography.headlineLarge)
                 Text(
-                    "Milestone 3 • lifecycle recovery • ${BuildConfig.VERSION_NAME}",
+                    "Milestone 4 • system bridge scanner • ${BuildConfig.VERSION_NAME}",
                     style = MaterialTheme.typography.labelLarge,
                     color = MaterialTheme.colorScheme.primary,
                 )
@@ -173,10 +205,61 @@ class MainActivity : ComponentActivity() {
                         Text("Noise Suppressor Android: ${if (stats.noiseSuppressorEnabled) "ON" else "OFF"}")
                         Text("Echo Canceler Android: ${if (stats.echoCancelerEnabled) "ON" else "OFF"}")
                         Text("AGC Android: ${if (stats.automaticGainEnabled) "ON" else "OFF"}")
+                    }
+                }
+
+                Card(modifier = Modifier.fillMaxWidth()) {
+                    Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text("Milestone 4 — Integração com jogos", style = MaterialTheme.typography.titleMedium)
                         Text(
-                            "Alpha07 diferencia stream congelado de silêncio imposto pelo Android. Ao voltar para o ClearMic, uma sessão presa é recuperada automaticamente.",
+                            "Scanner passivo do sistema. Esta etapa só lê capacidades e não modifica o áudio do Android.",
                             style = MaterialTheme.typography.bodySmall,
                         )
+
+                        if (systemScanRunning && systemReport == null) {
+                            Text("Escaneando capacidades do sistema…", color = MaterialTheme.colorScheme.primary)
+                        }
+
+                        systemReport?.let { report ->
+                            Text("Dispositivo: ${report.manufacturer} ${report.model}")
+                            Text("Android/API: ${report.sdkInt} • ABI: ${report.abi}")
+                            Text("SELinux: ${report.selinuxState}")
+                            Text("Indício passivo de root: ${if (report.rootCandidate) "SIM" else "NÃO"}")
+                            Text("SU: ${report.suCommandPath ?: "não localizado"}")
+                            Text("Magisk: ${report.magiskCommandPath ?: "não localizado"}")
+                            Text("KernelSU/ksud: ${report.kernelSuCommandPath ?: "não localizado"}")
+                            Text("Configs de efeitos legíveis: ${report.readableAudioConfigCount}")
+                            Text(
+                                "Preprocess voice_communication: ${if (report.hasVoiceCommunicationPreprocess) "ENCONTRADO" else "NÃO ENCONTRADO"}"
+                            )
+                            Text(
+                                "Efeitos nativos: NS ${onOff(report.nativeNoiseSuppressorAvailable)} • " +
+                                    "AEC ${onOff(report.nativeEchoCancelerAvailable)} • " +
+                                    "AGC ${onOff(report.nativeAgcAvailable)}"
+                            )
+                            Text("Rota candidata: ${bridgeReadinessLabel(report.bridgeReadiness)}")
+
+                            report.audioEffectConfigs.take(4).forEach { config ->
+                                Text(
+                                    "• ${config.path} — ${if (config.readable) "legível" else "bloqueado"}" +
+                                        if (config.readable && config.hasVoiceCommunication) " • voice_comm" else "",
+                                    style = MaterialTheme.typography.bodySmall,
+                                )
+                            }
+
+                            Text(
+                                report.recommendation,
+                                color = MaterialTheme.colorScheme.primary,
+                                style = MaterialTheme.typography.bodyMedium,
+                            )
+                        }
+
+                        OutlinedButton(
+                            enabled = !systemScanRunning,
+                            onClick = { runSystemScan() },
+                        ) {
+                            Text(if (systemScanRunning) "Escaneando…" else "Escanear novamente")
+                        }
                     }
                 }
 
@@ -211,10 +294,18 @@ class MainActivity : ComponentActivity() {
 
                 Spacer(Modifier.height(4.dp))
                 Text(
-                    "A rota AAudio e o Native Adaptive V3 foram preservados. Este hotfix mexe apenas na recuperação da sessão ao alternar entre apps; WebRTC/RNNoise continuam pausados até a captura em segundo plano ficar confiável.",
+                    "A captura AAudio e o Native Adaptive V3 continuam intactos. A Milestone 4 começa somente com diagnóstico read-only; qualquer bridge privilegiado terá validação e rollback antes de alterar a cadeia de áudio.",
                     style = MaterialTheme.typography.bodyMedium,
                 )
             }
         }
+    }
+
+    private fun onOff(value: Boolean): String = if (value) "ON" else "OFF"
+
+    private fun bridgeReadinessLabel(readiness: BridgeReadiness): String = when (readiness) {
+        BridgeReadiness.DIAGNOSTIC_ONLY -> "DIAGNÓSTICO / ROOT NECESSÁRIO"
+        BridgeReadiness.ROOT_BRIDGE_CANDIDATE -> "ROOT BRIDGE CANDIDATE"
+        BridgeReadiness.SYSTEM_PREPROCESS_CANDIDATE -> "SYSTEM PREPROCESS CANDIDATE"
     }
 }
