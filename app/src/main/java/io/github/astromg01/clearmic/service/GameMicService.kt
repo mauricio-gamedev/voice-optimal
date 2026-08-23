@@ -8,7 +8,13 @@ import android.app.Service
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.Build
+import android.os.Debug
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
+import android.os.PowerManager
+import android.os.Process
+import android.os.SystemClock
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import io.github.astromg01.clearmic.audio.AudioEngine
@@ -23,31 +29,69 @@ class GameMicService : Service() {
 
         private const val CHANNEL_ID = "clearmic_active"
         private const val NOTIFICATION_ID = 1001
+        private const val DIAGNOSTICS_INTERVAL_MS = 2_000L
     }
 
     private lateinit var engine: AudioEngine
+    private lateinit var survivalManager: BackgroundSurvivalManager
+    private val diagnosticsHandler = Handler(Looper.getMainLooper())
+
+    private var serviceStartedElapsedMs = 0L
+    private var lastCpuElapsedMs = 0L
+    private var lastCpuWallMs = 0L
+
+    private val diagnosticsRunnable = object : Runnable {
+        override fun run() {
+            publishDiagnostics()
+            if (survivalManager.desiredRunning) {
+                diagnosticsHandler.postDelayed(this, DIAGNOSTICS_INTERVAL_MS)
+            }
+        }
+    }
 
     override fun onCreate() {
         super.onCreate()
         createChannel()
         engine = AudioEngine(applicationContext)
+        survivalManager = BackgroundSurvivalManager(applicationContext)
+        serviceStartedElapsedMs = SystemClock.elapsedRealtime()
+        lastCpuElapsedMs = Process.getElapsedCpuTime()
+        lastCpuWallMs = serviceStartedElapsedMs
+        publishDiagnostics()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
-            ACTION_STOP -> stopEngineAndSelf()
-            ACTION_START, null -> startEngineSafely()
+            ACTION_STOP -> {
+                survivalManager.markUserStopped()
+                publishDiagnostics()
+                stopEngineAndSelf()
+                return START_NOT_STICKY
+            }
+
+            ACTION_START -> {
+                survivalManager.markUserStarted()
+                startEngineSafely(recovered = false)
+            }
+
+            null -> {
+                if (!survivalManager.desiredRunning) {
+                    stopSelf()
+                    return START_NOT_STICKY
+                }
+                survivalManager.markStickyRestart()
+                startEngineSafely(recovered = true)
+            }
         }
-        return START_NOT_STICKY
+
+        return if (survivalManager.desiredRunning) START_STICKY else START_NOT_STICKY
     }
 
-    private fun startEngineSafely() {
-        if (AudioRuntime.state.value == EngineState.RUNNING) return
-
+    private fun startEngineSafely(recovered: Boolean) {
         ServiceCompat.startForeground(
             this,
             NOTIFICATION_ID,
-            buildNotification(),
+            buildNotification(recovered),
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
                 ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
             } else {
@@ -55,22 +99,75 @@ class GameMicService : Service() {
             },
         )
 
-        runCatching { engine.start() }
-            .onFailure {
+        if (AudioRuntime.state.value != EngineState.RUNNING) {
+            val failure = runCatching { engine.start() }.exceptionOrNull()
+            if (failure != null) {
+                survivalManager.markUserStopped()
+                survivalManager.markEvent("Falha ao iniciar motor: ${failure.javaClass.simpleName}")
                 AudioRuntime.updateState(EngineState.ERROR)
+                publishDiagnostics()
                 stopForeground(STOP_FOREGROUND_REMOVE)
                 stopSelf()
+                return
             }
+        }
+
+        if (!recovered) {
+            survivalManager.markEvent("Motor local em execução")
+        }
+        scheduleDiagnostics()
+    }
+
+    private fun scheduleDiagnostics() {
+        diagnosticsHandler.removeCallbacks(diagnosticsRunnable)
+        diagnosticsHandler.post(diagnosticsRunnable)
+    }
+
+    private fun publishDiagnostics() {
+        val nowWall = SystemClock.elapsedRealtime()
+        val nowCpu = Process.getElapsedCpuTime()
+        val wallDelta = nowWall - lastCpuWallMs
+        val cpuDelta = nowCpu - lastCpuElapsedMs
+        val cpuPercent = if (wallDelta > 0L) {
+            (cpuDelta.toFloat() * 100f / wallDelta.toFloat()).coerceIn(0f, 100f)
+        } else {
+            0f
+        }
+
+        lastCpuWallMs = nowWall
+        lastCpuElapsedMs = nowCpu
+
+        val powerManager = getSystemService(PowerManager::class.java)
+        val batteryOptimizationActive = !powerManager.isIgnoringBatteryOptimizations(packageName)
+
+        BackgroundRuntime.update(
+            BackgroundStats(
+                desiredRunning = survivalManager.desiredRunning,
+                restartCount = survivalManager.restartCount,
+                sessionStartedAtMs = survivalManager.sessionStartedAtMs,
+                serviceUptimeMs = (nowWall - serviceStartedElapsedMs).coerceAtLeast(0L),
+                memoryPssMb = Debug.getPss() / 1024f,
+                cpuPercent = cpuPercent,
+                batteryOptimizationActive = batteryOptimizationActive,
+                lastEvent = survivalManager.lastEvent,
+            )
+        )
     }
 
     private fun stopEngineAndSelf() {
+        diagnosticsHandler.removeCallbacks(diagnosticsRunnable)
         engine.stop()
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
     }
 
     override fun onDestroy() {
-        engine.stop()
+        diagnosticsHandler.removeCallbacks(diagnosticsRunnable)
+        if (::survivalManager.isInitialized && survivalManager.desiredRunning) {
+            survivalManager.markEvent("Serviço encerrado; aguardando recuperação do Android")
+        }
+        if (::engine.isInitialized) engine.stop()
+        if (::survivalManager.isInitialized) publishDiagnostics()
         super.onDestroy()
     }
 
@@ -90,7 +187,7 @@ class GameMicService : Service() {
         }
     }
 
-    private fun buildNotification(): Notification {
+    private fun buildNotification(recovered: Boolean): Notification {
         val openIntent = PendingIntent.getActivity(
             this,
             0,
@@ -108,7 +205,10 @@ class GameMicService : Service() {
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(io.github.astromg01.clearmic.R.drawable.ic_mic)
             .setContentTitle("ClearMic ativo")
-            .setContentText("Processamento local de microfone em execução")
+            .setContentText(
+                if (recovered) "Motor recuperado e processamento retomado"
+                else "Processamento local de microfone em execução"
+            )
             .setContentIntent(openIntent)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
