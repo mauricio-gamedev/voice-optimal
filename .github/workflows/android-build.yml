@@ -31,6 +31,19 @@ jobs:
       - name: Install Android SDK 36 and native toolchain
         run: sdkmanager "platforms;android-36" "build-tools;36.0.0" "ndk;26.3.11579264" "cmake;3.22.1"
 
+      - name: Stage apksigner tool
+        run: |
+          mkdir -p "$RUNNER_TEMP/apksigner-tool/lib"
+          cp "$ANDROID_SDK_ROOT/build-tools/36.0.0/apksigner" "$RUNNER_TEMP/apksigner-tool/apksigner"
+          cp "$ANDROID_SDK_ROOT/build-tools/36.0.0/lib/apksigner.jar" "$RUNNER_TEMP/apksigner-tool/lib/apksigner.jar"
+
+      - name: Upload apksigner tool
+        uses: actions/upload-artifact@v7
+        with:
+          name: internal-apksigner-tool
+          path: ${{ runner.temp }}/apksigner-tool
+          if-no-files-found: error
+
       - name: Set up Gradle 9.5.0
         uses: gradle/actions/setup-gradle@v6
         with:
