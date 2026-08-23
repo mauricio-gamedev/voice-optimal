@@ -51,7 +51,10 @@ Future layers:
 - targetSdk 36
 - minSdk 28
 - Kotlin / Compose Compiler plugin 2.3.21
-- Compose BOM 2026.08.00
+- Compose BOM 2025.08.00 (Compose 1.9 generation)
+- AndroidX Core 1.16.0
+- Activity 1.11.0
+- Lifecycle 2.9.1
 
 ## Build on GitHub
 
