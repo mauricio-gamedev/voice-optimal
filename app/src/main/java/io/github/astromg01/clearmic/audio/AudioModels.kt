@@ -6,6 +6,12 @@ data class AudioStats(
     val noiseSuppressorEnabled: Boolean = false,
     val echoCancelerEnabled: Boolean = false,
     val automaticGainEnabled: Boolean = false,
+    val engineBackend: String = "Idle",
+    val dspBackend: String = "None",
+    val voiceProbability: Float = 0f,
+    val noiseFloorDb: Float = -120f,
+    val xrunCount: Int = 0,
+    val capturedFrames: Long = 0L,
 )
 
 enum class EngineState {
