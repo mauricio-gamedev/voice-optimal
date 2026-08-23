@@ -18,13 +18,12 @@ final class SourceDefaultNsController {
     static final String PROFILE_BALANCED = "BALANCED";
     static final String PROFILE_STRONG = "STRONG";
 
-    // AudioEffect.EFFECT_TYPE_NULL is hidden from the public SDK stubs. AOSP defines
-    // it as the all-zero effect UUID, so keep the value locally for hidden-API calls.
     private static final UUID NULL_EFFECT_UUID = new UUID(0L, 0L);
 
     private final List<Object> defaults = new ArrayList<>();
     private String profile = PROFILE_BALANCED;
     private String status = "SOURCE_DEFAULT: disabled";
+    private int registeredNoiseSuppressors;
 
     void setProfile(String requested) {
         profile = normalizeProfile(requested);
@@ -34,30 +33,33 @@ final class SourceDefaultNsController {
         return profile;
     }
 
+    int registeredNoiseSuppressors() {
+        return registeredNoiseSuppressors;
+    }
+
+    boolean hasNoiseSuppressionReady() {
+        return registeredNoiseSuppressors > 0;
+    }
+
     String enable() {
         releaseInternal(false);
+        registeredNoiseSuppressors = 0;
 
         Map<UUID, List<UUID>> implementations = effectImplementations();
         List<String> results = new ArrayList<>();
 
-        // NS is the foundation and is registered for all capture sources we have observed
-        // in games/voice apps. The vendor controls its internal suppression strength.
-        registerEffect("NS", AudioEffect.EFFECT_TYPE_NS, MediaRecorder.AudioSource.MIC,
-                implementations, 100, results, true);
-        registerEffect("NS", AudioEffect.EFFECT_TYPE_NS, MediaRecorder.AudioSource.VOICE_RECOGNITION,
-                implementations, 100, results, true);
-        registerEffect("NS", AudioEffect.EFFECT_TYPE_NS, MediaRecorder.AudioSource.VOICE_COMMUNICATION,
-                implementations, 100, results, true);
+        if (registerEffect("NS", AudioEffect.EFFECT_TYPE_NS, MediaRecorder.AudioSource.MIC,
+                implementations, 100, results, true)) registeredNoiseSuppressors++;
+        if (registerEffect("NS", AudioEffect.EFFECT_TYPE_NS, MediaRecorder.AudioSource.VOICE_RECOGNITION,
+                implementations, 100, results, true)) registeredNoiseSuppressors++;
+        if (registerEffect("NS", AudioEffect.EFFECT_TYPE_NS, MediaRecorder.AudioSource.VOICE_COMMUNICATION,
+                implementations, 100, results, true)) registeredNoiseSuppressors++;
 
-        // AEC is only appropriate for communication capture. Do not attach it to
-        // VOICE_RECOGNITION because it can damage normal speech in games that do not use an echo path.
         if (!PROFILE_LIGHT.equals(profile)) {
             registerEffect("AEC", AudioEffect.EFFECT_TYPE_AEC, MediaRecorder.AudioSource.VOICE_COMMUNICATION,
                     implementations, 90, results, false);
         }
 
-        // AGC is optional and only used by the Strong profile. It is never required for success;
-        // some Samsung builds do not expose an AGC implementation at all.
         if (PROFILE_STRONG.equals(profile)) {
             registerEffect("AGC", AudioEffect.EFFECT_TYPE_AGC, MediaRecorder.AudioSource.VOICE_RECOGNITION,
                     implementations, 80, results, false);
@@ -66,7 +68,8 @@ final class SourceDefaultNsController {
         }
 
         status = "SOURCE_DEFAULT[" + profile + "]: " + String.join(" | ", results)
-                + " • active=" + defaults.size();
+                + " • active=" + defaults.size()
+                + " • nsReady=" + registeredNoiseSuppressors + "/3";
         return status;
     }
 
@@ -88,10 +91,11 @@ final class SourceDefaultNsController {
             }
         }
         defaults.clear();
+        registeredNoiseSuppressors = 0;
         if (updateStatus) status = "SOURCE_DEFAULT[" + profile + "]: disabled";
     }
 
-    private void registerEffect(
+    private boolean registerEffect(
             String label,
             UUID type,
             int source,
@@ -102,17 +106,15 @@ final class SourceDefaultNsController {
     ) {
         List<UUID> concrete = implementations.get(type);
         if (concrete == null || concrete.isEmpty()) {
-            // Type-based selection can still work even if queryEffects omits a descriptor,
-            // so probe it once. Optional effects report unavailable cleanly if it fails.
             try {
                 Object effect = create(type, NULL_EFFECT_UUID, priority, source);
                 defaults.add(effect);
                 results.add(label + "@" + sourceName(source) + "=type:OK");
-                return;
+                return true;
             } catch (Throwable error) {
                 results.add(label + "@" + sourceName(source) + "="
                         + (required ? "FAIL:" + describe(unwrap(error)) : "unavailable"));
-                return;
+                return false;
             }
         }
 
@@ -121,7 +123,7 @@ final class SourceDefaultNsController {
             Object effect = create(type, NULL_EFFECT_UUID, priority, source);
             defaults.add(effect);
             results.add(label + "@" + sourceName(source) + "=type:OK");
-            return;
+            return true;
         } catch (Throwable error) {
             lastError = unwrap(error);
         }
@@ -131,7 +133,7 @@ final class SourceDefaultNsController {
                 Object effect = create(NULL_EFFECT_UUID, uuid, priority, source);
                 defaults.add(effect);
                 results.add(label + "@" + sourceName(source) + "=uuid:" + shortUuid(uuid) + ":OK");
-                return;
+                return true;
             } catch (Throwable error) {
                 lastError = unwrap(error);
             }
@@ -139,6 +141,7 @@ final class SourceDefaultNsController {
 
         results.add(label + "@" + sourceName(source) + "="
                 + (required ? "FAIL:" + describe(lastError) : "unavailable:" + describe(lastError)));
+        return false;
     }
 
     private Map<UUID, List<UUID>> effectImplementations() {

@@ -24,12 +24,15 @@ import java.util.concurrent.TimeUnit;
 public final class ShizukuAudioUserService extends IShizukuAudioService.Stub {
     private static final int MAX_OUTPUT_CHARS = 384 * 1024;
     private static final long COMMAND_TIMEOUT_SECONDS = 6L;
-    private static final long MONITOR_INTERVAL_MS = 500L;
+    private static final long MONITOR_IDLE_INTERVAL_MS = 1200L;
+    private static final long MONITOR_ACTIVE_INTERVAL_MS = 300L;
     private static final String CLEARMIC_PACKAGE = "io.github.astromg01.clearmic";
 
     private final Object lock = new Object();
     private final Map<Integer, SessionNoiseEffectInstaller.Handle> effects = new HashMap<>();
     private final Map<Integer, Integer> attempts = new HashMap<>();
+    private final Set<String> verifiedHistory = new HashSet<>();
+    private final Set<String> failedHistory = new HashSet<>();
     private final SourceDefaultNsController sourceDefaults = new SourceDefaultNsController();
 
     private volatile boolean enabled;
@@ -41,6 +44,10 @@ public final class ShizukuAudioUserService extends IShizukuAudioService.Stub {
     private volatile String sourceDefaultStatus = "SOURCE_DEFAULT: disabled";
     private volatile String lastExternal = "LAST_EXTERNAL: none seen since enable";
     private volatile String lastSnapshot = "recordings=0";
+    private volatile int protectedSessions;
+    private volatile int failedSessions;
+    private volatile String lastProtectedPackage = "—";
+    private volatile String lastVerifiedChain = "—";
 
     public ShizukuAudioUserService() {}
 
@@ -49,7 +56,7 @@ public final class ShizukuAudioUserService extends IShizukuAudioService.Stub {
 
     @Override
     public String getIdentity() {
-        return "uid=" + Os.getuid() + ";pid=" + Process.myPid() + ";alpha16";
+        return "uid=" + Os.getuid() + ";pid=" + Process.myPid() + ";alpha17";
     }
 
     @Override
@@ -105,28 +112,35 @@ public final class ShizukuAudioUserService extends IShizukuAudioService.Stub {
             inventory = SessionNoiseEffectInstaller.inventory();
             lastExternal = "LAST_EXTERNAL: none seen since enable";
             monitor = "MONITOR: starting IAudioService Binder";
+            resetSessionHealth();
 
-            // Register transient defaults BEFORE the game creates its AudioRecord.
-            // Alpha15 proved this is the working Samsung path for NS inheritance.
             sourceDefaults.setProfile(profile);
             sourceDefaultStatus = sourceDefaults.enable();
+            if (!sourceDefaults.hasNoiseSuppressionReady()) {
+                sourceDefaults.release();
+                sourceDefaultStatus = sourceDefaults.status();
+                enabled = false;
+                status = "ERROR: no source-default Noise Suppressor could be registered";
+                return status;
+            }
 
             enabled = true;
             startMonitor();
-            status = "ENABLED • profile=" + profile + " • source-default enhancements registered; waiting for game/voice recording session";
+            status = "ENABLED • profile=" + profile
+                    + " • source-default enhancements registered; waiting for game/voice recording session";
         } else {
             enabled = false;
             sourceDefaults.release();
             sourceDefaultStatus = sourceDefaults.status();
             releaseAll();
-            status = "DISABLED • profile=" + profile + " • transient source-default and session effects released";
+            status = "DISABLED • profile=" + profile + " • transient enhancements released";
         }
         return status;
     }
 
     @Override
     public String getGameBridgeStatus() {
-        return status + "\n" + monitor + "\n" + sourceDefaultStatus + "\n" + inventory
+        return status + "\n" + protectionSummary() + "\n" + monitor + "\n" + sourceDefaultStatus + "\n" + inventory
                 + "\n" + lastExternal + "\n" + lastSnapshot;
     }
 
@@ -141,13 +155,14 @@ public final class ShizukuAudioUserService extends IShizukuAudioService.Stub {
 
     private void monitorLoop() {
         while (enabled) {
+            boolean activeRecords = false;
             try {
-                monitorPass();
+                activeRecords = monitorPass();
             } catch (Throwable error) {
                 status = "ERROR: monitor " + describe(error);
             }
             try {
-                Thread.sleep(MONITOR_INTERVAL_MS);
+                Thread.sleep(activeRecords ? MONITOR_ACTIVE_INTERVAL_MS : MONITOR_IDLE_INTERVAL_MS);
             } catch (InterruptedException ignored) {
                 Thread.currentThread().interrupt();
                 break;
@@ -157,9 +172,10 @@ public final class ShizukuAudioUserService extends IShizukuAudioService.Stub {
         synchronized (lock) { monitorThread = null; }
     }
 
-    private void monitorPass() throws Exception {
+    private boolean monitorPass() throws Exception {
         List<AudioRecordingSessionMonitor.Target> targets = AudioRecordingSessionMonitor.read();
-        monitor = "MONITOR: IAudioService Binder • records=" + targets.size();
+        long cadence = targets.isEmpty() ? MONITOR_IDLE_INTERVAL_MS : MONITOR_ACTIVE_INTERVAL_MS;
+        monitor = "MONITOR: IAudioService Binder • records=" + targets.size() + " • cadence=" + cadence + "ms";
         lastSnapshot = formatSnapshot(targets);
 
         Set<Integer> eligible = new HashSet<>();
@@ -189,9 +205,13 @@ public final class ShizukuAudioUserService extends IShizukuAudioService.Stub {
                     + (verified.length() > 0 ? " VERIFIED=" + verified : " VERIFIED=none");
             active.add(targetLabel);
 
-            // Keep alpha14's post-hoc NS probe only as a fallback when the source-default
-            // chain did not inherit NS. AEC/AGC are never forced post-hoc.
-            if (!inheritedNs) {
+            String sessionKey = sessionKey(target);
+            if (inheritedNs) {
+                if (verifiedHistory.add(sessionKey)) protectedSessions++;
+                if (failedHistory.remove(sessionKey) && failedSessions > 0) failedSessions--;
+                lastProtectedPackage = target.packageName.isEmpty() ? "uid:" + target.uid : target.packageName;
+                lastVerifiedChain = verified.length() == 0 ? "NS" : verified.toString();
+            } else {
                 synchronized (lock) {
                     SessionNoiseEffectInstaller.Handle current = effects.get(target.session);
                     int count = attempts.containsKey(target.session) ? attempts.get(target.session) : 0;
@@ -201,6 +221,11 @@ public final class ShizukuAudioUserService extends IShizukuAudioService.Stub {
                                 SessionNoiseEffectInstaller.install(target.session, target.source);
                         effects.put(target.session, next);
                         attempts.put(target.session, count + 1);
+                    }
+                    int currentAttempts = attempts.containsKey(target.session) ? attempts.get(target.session) : 0;
+                    SessionNoiseEffectInstaller.Handle handle = effects.get(target.session);
+                    if (currentAttempts >= 4 && (handle == null || !handle.hasWorkingNs())) {
+                        if (failedHistory.add(sessionKey)) failedSessions++;
                     }
                 }
             }
@@ -216,11 +241,11 @@ public final class ShizukuAudioUserService extends IShizukuAudioService.Stub {
             }
         }
 
-        if (!enabled) return;
+        if (!enabled) return !targets.isEmpty();
         if (active.isEmpty()) {
             status = "ENABLED • profile=" + profile + " • no eligible unsilenced mic session"
                     + (silenced > 0 ? " • silenced sessions=" + silenced : "");
-            return;
+            return !targets.isEmpty();
         }
 
         String effectSummary = effectSummary();
@@ -228,6 +253,31 @@ public final class ShizukuAudioUserService extends IShizukuAudioService.Stub {
                 + (effectSummary.isEmpty() ? "" : " • " + effectSummary);
         lastExternal = "LAST_EXTERNAL: " + targetSummary;
         status = "ACTIVE • profile=" + profile + " • targets=" + active.size() + " • " + targetSummary;
+        return true;
+    }
+
+    private void resetSessionHealth() {
+        synchronized (lock) {
+            verifiedHistory.clear();
+            failedHistory.clear();
+        }
+        protectedSessions = 0;
+        failedSessions = 0;
+        lastProtectedPackage = "—";
+        lastVerifiedChain = "—";
+    }
+
+    private String protectionSummary() {
+        String state;
+        if (!enabled) state = "OFF";
+        else if (protectedSessions > 0) state = "CONFIRMED";
+        else if (failedSessions > 0) state = "WARNING";
+        else state = "ARMED";
+        return "PROTECTION: " + state
+                + " • protected=" + protectedSessions
+                + " • failed=" + failedSessions
+                + " • last=" + lastProtectedPackage
+                + " • chain=" + lastVerifiedChain;
     }
 
     private boolean eligible(AudioRecordingSessionMonitor.Target target) {
@@ -240,6 +290,10 @@ public final class ShizukuAudioUserService extends IShizukuAudioService.Stub {
                 || source == MediaRecorder.AudioSource.VOICE_COMMUNICATION
                 || source == MediaRecorder.AudioSource.UNPROCESSED
                 || source == MediaRecorder.AudioSource.VOICE_PERFORMANCE;
+    }
+
+    private static String sessionKey(AudioRecordingSessionMonitor.Target target) {
+        return (target.packageName == null ? "" : target.packageName) + "#" + target.session;
     }
 
     private static boolean hasEffect(String effectsText, String... names) {
