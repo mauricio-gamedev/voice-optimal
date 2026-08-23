@@ -1,12 +1,12 @@
 package io.github.astromg01.clearmic.system.shizuku;
 
 import android.content.Context;
-import android.media.AudioManager;
 import android.media.AudioRecordingConfiguration;
 import android.media.MediaRecorder;
 import android.media.audiofx.AudioEffect;
 import android.media.audiofx.AcousticEchoCanceler;
 import android.media.audiofx.NoiseSuppressor;
+import android.os.IBinder;
 import android.os.Process;
 import android.system.Os;
 
@@ -25,13 +25,16 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.FutureTask;
 import java.util.concurrent.TimeUnit;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
- * Runs inside Shizuku UserService as UID 2000 (ADB shell) or UID 0 (root/Sui).
+ * Shizuku UserService running as UID 2000 (ADB shell) or UID 0 (root/Sui).
  *
- * Alpha12 hardens the game-facing bridge: the app waits for its own recorder to
- * stop before enabling this daemon, while this service preserves the last external
- * recording target/effect result so evidence is still visible after returning from a game.
+ * Alpha13 no longer depends on Context#getSystemService(AudioManager) for the game
+ * monitor. Shizuku UserService is not a normal Android app process, so the monitor
+ * talks directly to IAudioService over Binder and uses dumpsys only as a safety
+ * fallback. This keeps the daemon independent from the ClearMic Activity lifecycle.
  */
 @Keep
 public final class ShizukuAudioUserService extends IShizukuAudioService.Stub {
@@ -41,22 +44,29 @@ public final class ShizukuAudioUserService extends IShizukuAudioService.Stub {
     private static final long GAME_MONITOR_INTERVAL_MS = 500L;
     private static final String CLEARMIC_PACKAGE = "io.github.astromg01.clearmic";
 
+    private static final Pattern SESSION_PATTERN = Pattern.compile("session[:=](\\d+)", Pattern.CASE_INSENSITIVE);
+    private static final Pattern UID_PATTERN = Pattern.compile("uid[:=](\\d+)", Pattern.CASE_INSENSITIVE);
+    private static final Pattern PACKAGE_PATTERN = Pattern.compile("(?:pack|pkg)[:=]([^\\s,]+)", Pattern.CASE_INSENSITIVE);
+    private static final Pattern SOURCE_PATTERN = Pattern.compile("(?:source\\s+client=|source:|src:)([A-Z0-9_]+)", Pattern.CASE_INSENSITIVE);
+    private static final Pattern SILENCED_PATTERN = Pattern.compile("silenced[:=](true|false)", Pattern.CASE_INSENSITIVE);
+
     private final Object gameLock = new Object();
     private final Map<Integer, EffectBundle> activeEffectBundles = new HashMap<>();
 
-    private volatile Context serviceContext;
     private volatile boolean gameBridgeEnabled = false;
     private volatile Thread gameMonitorThread;
     private volatile String gameBridgeStatus = "DISABLED";
     private volatile String lastRecordingSnapshot = "NO SNAPSHOT";
     private volatile String lastExternalTarget = "LAST_EXTERNAL: none seen since enable";
+    private volatile String monitorBackend = "MONITOR: not started";
 
     public ShizukuAudioUserService() {
     }
 
     @Keep
     public ShizukuAudioUserService(Context context) {
-        serviceContext = context;
+        // Kept for Shizuku v13 constructor compatibility. Alpha13 intentionally does
+        // not use this Context for AudioManager because UserService is not a normal app process.
     }
 
     @Override
@@ -104,11 +114,8 @@ public final class ShizukuAudioUserService extends IShizukuAudioService.Stub {
     @Override
     public String setGameBridgeEnabled(boolean enabled) {
         if (enabled) {
-            if (serviceContext == null) {
-                gameBridgeStatus = "ERROR: Shizuku UserService Context unavailable";
-                return gameBridgeStatus;
-            }
             lastExternalTarget = "LAST_EXTERNAL: none seen since enable";
+            monitorBackend = "MONITOR: starting Binder monitor";
             gameBridgeEnabled = true;
             startGameMonitorIfNeeded();
             gameBridgeStatus = "ENABLED • waiting for an eligible game/voice recording session";
@@ -122,7 +129,7 @@ public final class ShizukuAudioUserService extends IShizukuAudioService.Stub {
 
     @Override
     public String getGameBridgeStatus() {
-        return gameBridgeStatus + "\n" + lastExternalTarget + "\n" + lastRecordingSnapshot;
+        return gameBridgeStatus + "\n" + monitorBackend + "\n" + lastExternalTarget + "\n" + lastRecordingSnapshot;
     }
 
     private void startGameMonitorIfNeeded() {
@@ -158,35 +165,31 @@ public final class ShizukuAudioUserService extends IShizukuAudioService.Stub {
     }
 
     private void monitorOnePass() {
-        List<AudioRecordingConfiguration> configs = getActiveRecordingConfigurations();
+        List<CaptureTarget> targets = readActiveCaptureTargets();
         Set<Integer> eligibleSessions = new HashSet<>();
         List<String> activeTargets = new ArrayList<>();
         int silencedCount = 0;
 
-        for (AudioRecordingConfiguration config : configs) {
-            int session = config.getClientAudioSessionId();
-            int source = config.getClientAudioSource();
-            boolean silenced = safeIsSilenced(config);
-            String packageName = getClientPackageName(config);
-            int clientUid = getClientUid(config);
+        for (CaptureTarget target : targets) {
+            if (target.session <= 0) continue;
+            if (CLEARMIC_PACKAGE.equals(target.packageName)) continue;
+            if (!isEligibleCaptureSource(target.source)) continue;
 
-            if (session <= 0) continue;
-            if (CLEARMIC_PACKAGE.equals(packageName)) continue;
-            if (!isEligibleCaptureSource(source)) continue;
-
-            if (silenced) {
+            if (target.silenced) {
                 silencedCount++;
                 continue;
             }
 
-            eligibleSessions.add(session);
-            String targetLabel = (packageName == null || packageName.isEmpty() ? "uid=" + clientUid : packageName)
-                    + " session=" + session + " src=" + sourceName(source);
+            eligibleSessions.add(target.session);
+            String targetLabel = target.label();
             activeTargets.add(targetLabel);
 
             synchronized (gameLock) {
-                if (!activeEffectBundles.containsKey(session)) {
-                    activeEffectBundles.put(session, attachSafeNativeEffects(session, source, targetLabel));
+                if (!activeEffectBundles.containsKey(target.session)) {
+                    activeEffectBundles.put(
+                            target.session,
+                            attachSafeNativeEffects(target.session, target.source, targetLabel)
+                    );
                 }
             }
         }
@@ -202,7 +205,7 @@ public final class ShizukuAudioUserService extends IShizukuAudioService.Stub {
             }
         }
 
-        lastRecordingSnapshot = formatRecordingSnapshot(configs);
+        lastRecordingSnapshot = formatRecordingSnapshot(targets);
 
         int attached;
         String bundleSummary;
@@ -230,6 +233,108 @@ public final class ShizukuAudioUserService extends IShizukuAudioService.Stub {
         }
     }
 
+    private List<CaptureTarget> readActiveCaptureTargets() {
+        try {
+            List<CaptureTarget> targets = readViaAudioServiceBinder();
+            monitorBackend = "MONITOR: IAudioService Binder • records=" + targets.size();
+            return targets;
+        } catch (Throwable binderError) {
+            try {
+                List<CaptureTarget> targets = readViaDumpsysFallback();
+                monitorBackend = "MONITOR: dumpsys fallback • records=" + targets.size()
+                        + " • binder=" + binderError.getClass().getSimpleName();
+                return targets;
+            } catch (Throwable dumpError) {
+                monitorBackend = "MONITOR ERROR: Binder=" + binderError.getClass().getSimpleName()
+                        + " dumpsys=" + dumpError.getClass().getSimpleName();
+                throw new IllegalStateException(monitorBackend, dumpError);
+            }
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private List<CaptureTarget> readViaAudioServiceBinder() throws Exception {
+        Class<?> serviceManagerClass = Class.forName("android.os.ServiceManager");
+        Method getService = serviceManagerClass.getDeclaredMethod("getService", String.class);
+        getService.setAccessible(true);
+        IBinder audioBinder = (IBinder) getService.invoke(null, "audio");
+        if (audioBinder == null) throw new IllegalStateException("audio Binder unavailable");
+
+        Class<?> stubClass = Class.forName("android.media.IAudioService$Stub");
+        Method asInterface = stubClass.getDeclaredMethod("asInterface", IBinder.class);
+        asInterface.setAccessible(true);
+        Object audioService = asInterface.invoke(null, audioBinder);
+        if (audioService == null) throw new IllegalStateException("IAudioService unavailable");
+
+        Class<?> interfaceClass = Class.forName("android.media.IAudioService");
+        Method getActive = interfaceClass.getDeclaredMethod("getActiveRecordingConfigurations");
+        getActive.setAccessible(true);
+        Object raw = getActive.invoke(audioService);
+
+        List<CaptureTarget> result = new ArrayList<>();
+        if (!(raw instanceof List<?>)) return result;
+
+        for (Object item : (List<?>) raw) {
+            if (item instanceof AudioRecordingConfiguration) {
+                result.add(CaptureTarget.fromConfig((AudioRecordingConfiguration) item));
+            }
+        }
+        return result;
+    }
+
+    private List<CaptureTarget> readViaDumpsysFallback() {
+        String dump = executeReadOnly("dumpsys audio 2>&1");
+        if (dump.startsWith("ERROR:")) throw new IllegalStateException(dump);
+
+        List<CaptureTarget> result = new ArrayList<>();
+        boolean nextConfigIsActive = false;
+        for (String rawLine : dump.split("\\r?\\n")) {
+            String line = rawLine.trim();
+            String lower = line.toLowerCase(Locale.ROOT);
+
+            if (lower.startsWith("riid ") && lower.contains("active?")) {
+                nextConfigIsActive = lower.contains("active? true");
+                continue;
+            }
+
+            if (nextConfigIsActive && lower.contains("session:")) {
+                CaptureTarget target = parseDumpConfigLine(line);
+                if (target != null) result.add(target);
+                nextConfigIsActive = false;
+            }
+        }
+        return result;
+    }
+
+    private CaptureTarget parseDumpConfigLine(String line) {
+        int session = matchInt(SESSION_PATTERN, line, -1);
+        if (session <= 0) return null;
+
+        int uid = matchInt(UID_PATTERN, line, -1);
+        String packageName = matchString(PACKAGE_PATTERN, line, "");
+        String sourceToken = matchString(SOURCE_PATTERN, line, "DEFAULT");
+        int source = sourceFromName(sourceToken);
+        String silencedToken = matchString(SILENCED_PATTERN, line, "false");
+        boolean silenced = Boolean.parseBoolean(silencedToken);
+
+        return new CaptureTarget(session, source, uid, packageName, silenced, "");
+    }
+
+    private int matchInt(Pattern pattern, String text, int fallback) {
+        Matcher matcher = pattern.matcher(text);
+        if (!matcher.find()) return fallback;
+        try {
+            return Integer.parseInt(matcher.group(1));
+        } catch (Throwable ignored) {
+            return fallback;
+        }
+    }
+
+    private String matchString(Pattern pattern, String text, String fallback) {
+        Matcher matcher = pattern.matcher(text);
+        return matcher.find() ? safe(matcher.group(1)) : fallback;
+    }
+
     private EffectBundle attachSafeNativeEffects(int session, int source, String targetLabel) {
         NoiseSuppressor ns = null;
         AcousticEchoCanceler aec = null;
@@ -241,8 +346,8 @@ public final class ShizukuAudioUserService extends IShizukuAudioService.Stub {
                 ns = NoiseSuppressor.create(session);
                 if (ns != null) {
                     int result = ns.setEnabled(true);
-                    nsState = "NS=" + (ns.getEnabled() ? "ON" : "OFF") + "/result=" + result
-                            + "/control=" + ns.hasControl();
+                    nsState = "NS=" + (ns.getEnabled() ? "ON" : "OFF")
+                            + "/result=" + result + "/control=" + ns.hasControl();
                 } else {
                     nsState = "NS create=null";
                 }
@@ -261,8 +366,8 @@ public final class ShizukuAudioUserService extends IShizukuAudioService.Stub {
                     aec = AcousticEchoCanceler.create(session);
                     if (aec != null) {
                         int result = aec.setEnabled(true);
-                        aecState = "AEC=" + (aec.getEnabled() ? "ON" : "OFF") + "/result=" + result
-                                + "/control=" + aec.hasControl();
+                        aecState = "AEC=" + (aec.getEnabled() ? "ON" : "OFF")
+                                + "/result=" + result + "/control=" + aec.hasControl();
                     } else {
                         aecState = "AEC create=null";
                     }
@@ -283,62 +388,36 @@ public final class ShizukuAudioUserService extends IShizukuAudioService.Stub {
 
     private void releaseAllEffects() {
         synchronized (gameLock) {
-            for (EffectBundle bundle : activeEffectBundles.values()) {
-                bundle.release();
-            }
+            for (EffectBundle bundle : activeEffectBundles.values()) bundle.release();
             activeEffectBundles.clear();
         }
     }
 
-    private List<AudioRecordingConfiguration> getActiveRecordingConfigurations() {
-        Context context = serviceContext;
-        if (context == null) throw new IllegalStateException("UserService Context unavailable");
-
-        AudioManager audioManager = (AudioManager) context.getSystemService(Context.AUDIO_SERVICE);
-        if (audioManager == null) throw new IllegalStateException("AudioManager unavailable");
-
-        List<AudioRecordingConfiguration> result = audioManager.getActiveRecordingConfigurations();
-        return result == null ? new ArrayList<>() : result;
-    }
-
     private String buildRecordingSnapshot() {
         try {
-            return formatRecordingSnapshot(getActiveRecordingConfigurations());
+            return formatRecordingSnapshot(readActiveCaptureTargets());
         } catch (Throwable error) {
             return "RECORDINGS ERROR: " + error.getClass().getSimpleName() + ": " + safe(error.getMessage());
         }
     }
 
-    private String formatRecordingSnapshot(List<AudioRecordingConfiguration> configs) {
-        if (configs == null || configs.isEmpty()) return "recordings=0";
+    private String formatRecordingSnapshot(List<CaptureTarget> targets) {
+        StringBuilder out = new StringBuilder(monitorBackend)
+                .append("\nrecordings=").append(targets == null ? 0 : targets.size());
+        if (targets == null) return out.toString();
 
-        StringBuilder out = new StringBuilder("recordings=").append(configs.size());
-        for (AudioRecordingConfiguration config : configs) {
-            int source = config.getClientAudioSource();
-            out.append("\n• pkg=").append(blankToDash(getClientPackageName(config)))
-                    .append(" uid=").append(getClientUid(config))
-                    .append(" session=").append(config.getClientAudioSessionId())
-                    .append(" source=").append(sourceName(source))
-                    .append(" silenced=").append(safeIsSilenced(config));
-
-            try {
-                List<AudioEffect.Descriptor> effects = config.getEffects();
-                if (effects != null && !effects.isEmpty()) {
-                    out.append(" effects=");
-                    for (int i = 0; i < effects.size(); i++) {
-                        if (i > 0) out.append(',');
-                        AudioEffect.Descriptor descriptor = effects.get(i);
-                        String name = descriptor == null ? "?" : descriptor.name;
-                        out.append(name == null ? "?" : name.replace('\n', ' '));
-                    }
-                }
-            } catch (Throwable ignored) {
-            }
+        for (CaptureTarget target : targets) {
+            out.append("\n• pkg=").append(blankToDash(target.packageName))
+                    .append(" uid=").append(target.uid)
+                    .append(" session=").append(target.session)
+                    .append(" source=").append(sourceName(target.source))
+                    .append(" silenced=").append(target.silenced);
+            if (!target.effects.isEmpty()) out.append(" effects=").append(target.effects);
         }
         return out.toString();
     }
 
-    private String getClientPackageName(AudioRecordingConfiguration config) {
+    private static String getClientPackageName(AudioRecordingConfiguration config) {
         try {
             Method method = AudioRecordingConfiguration.class.getDeclaredMethod("getClientPackageName");
             method.setAccessible(true);
@@ -349,7 +428,7 @@ public final class ShizukuAudioUserService extends IShizukuAudioService.Stub {
         }
     }
 
-    private int getClientUid(AudioRecordingConfiguration config) {
+    private static int getClientUid(AudioRecordingConfiguration config) {
         try {
             Method method = AudioRecordingConfiguration.class.getDeclaredMethod("getClientUid");
             method.setAccessible(true);
@@ -360,11 +439,27 @@ public final class ShizukuAudioUserService extends IShizukuAudioService.Stub {
         }
     }
 
-    private boolean safeIsSilenced(AudioRecordingConfiguration config) {
+    private static boolean safeIsSilenced(AudioRecordingConfiguration config) {
         try {
             return config.isClientSilenced();
         } catch (Throwable ignored) {
             return false;
+        }
+    }
+
+    private static String effectNames(AudioRecordingConfiguration config) {
+        try {
+            List<AudioEffect.Descriptor> effects = config.getEffects();
+            if (effects == null || effects.isEmpty()) return "";
+            StringBuilder out = new StringBuilder();
+            for (AudioEffect.Descriptor descriptor : effects) {
+                if (descriptor == null || descriptor.name == null) continue;
+                if (out.length() > 0) out.append(',');
+                out.append(descriptor.name.replace('\n', ' '));
+            }
+            return out.toString();
+        } catch (Throwable ignored) {
+            return "";
         }
     }
 
@@ -375,6 +470,19 @@ public final class ShizukuAudioUserService extends IShizukuAudioService.Stub {
                 || source == MediaRecorder.AudioSource.VOICE_COMMUNICATION
                 || source == MediaRecorder.AudioSource.UNPROCESSED
                 || source == MediaRecorder.AudioSource.VOICE_PERFORMANCE;
+    }
+
+    private int sourceFromName(String value) {
+        String source = safe(value).toUpperCase(Locale.ROOT);
+        switch (source) {
+            case "MIC": return MediaRecorder.AudioSource.MIC;
+            case "VOICE_RECOGNITION": return MediaRecorder.AudioSource.VOICE_RECOGNITION;
+            case "VOICE_COMMUNICATION": return MediaRecorder.AudioSource.VOICE_COMMUNICATION;
+            case "UNPROCESSED": return MediaRecorder.AudioSource.UNPROCESSED;
+            case "VOICE_PERFORMANCE": return MediaRecorder.AudioSource.VOICE_PERFORMANCE;
+            case "CAMCORDER": return MediaRecorder.AudioSource.CAMCORDER;
+            default: return MediaRecorder.AudioSource.DEFAULT;
+        }
     }
 
     private String sourceName(int source) {
@@ -438,6 +546,40 @@ public final class ShizukuAudioUserService extends IShizukuAudioService.Stub {
         return value == null ? "" : value;
     }
 
+    private static final class CaptureTarget {
+        final int session;
+        final int source;
+        final int uid;
+        final String packageName;
+        final boolean silenced;
+        final String effects;
+
+        CaptureTarget(int session, int source, int uid, String packageName, boolean silenced, String effects) {
+            this.session = session;
+            this.source = source;
+            this.uid = uid;
+            this.packageName = packageName == null ? "" : packageName;
+            this.silenced = silenced;
+            this.effects = effects == null ? "" : effects;
+        }
+
+        static CaptureTarget fromConfig(AudioRecordingConfiguration config) {
+            return new CaptureTarget(
+                    config.getClientAudioSessionId(),
+                    config.getClientAudioSource(),
+                    getClientUid(config),
+                    getClientPackageName(config),
+                    safeIsSilenced(config),
+                    effectNames(config)
+            );
+        }
+
+        String label() {
+            String owner = packageName.isEmpty() ? "uid=" + uid : packageName;
+            return owner + " session=" + session + " src=" + source;
+        }
+    }
+
     private static final class EffectBundle {
         private final int session;
         private final String target;
@@ -446,14 +588,8 @@ public final class ShizukuAudioUserService extends IShizukuAudioService.Stub {
         private final String nsState;
         private final String aecState;
 
-        EffectBundle(
-                int session,
-                String target,
-                NoiseSuppressor ns,
-                AcousticEchoCanceler aec,
-                String nsState,
-                String aecState
-        ) {
+        EffectBundle(int session, String target, NoiseSuppressor ns, AcousticEchoCanceler aec,
+                     String nsState, String aecState) {
             this.session = session;
             this.target = target;
             this.ns = ns;
