@@ -20,13 +20,16 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import io.github.astromg01.clearmic.service.GameMicService
 import io.github.astromg01.clearmic.system.shizuku.GameBridgeVerdict
 import io.github.astromg01.clearmic.system.shizuku.ShizukuAudioBridge
 import io.github.astromg01.clearmic.system.shizuku.ShizukuAudioRuntime
 import io.github.astromg01.clearmic.system.shizuku.ShizukuBridgeState
 
 @Composable
-internal fun ShizukuIntegrationPanel() {
+internal fun ShizukuIntegrationPanel(
+    onBeforeEnableGameBridge: () -> Unit = {},
+) {
     val appContext = LocalContext.current.applicationContext
     val bridge = remember(appContext) { ShizukuAudioBridge(appContext) }
     val report by ShizukuAudioRuntime.report.collectAsState()
@@ -41,9 +44,9 @@ internal fun ShizukuIntegrationPanel() {
             modifier = Modifier.padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            Text("Shizuku — Bridge privilegiado", style = MaterialTheme.typography.titleMedium)
+            Text("Shizuku — Game Audio Bridge", style = MaterialTheme.typography.titleMedium)
             Text(
-                "Alpha10 corrige a entrega do Binder do Shizuku pelo provider oficial e mantém o diagnóstico privilegiado read-only.",
+                "Alpha11 usa o UserService como daemon: ele pode continuar ativo enquanto você sai do ClearMic e entra no jogo.",
                 style = MaterialTheme.typography.bodySmall,
             )
 
@@ -51,7 +54,6 @@ internal fun ShizukuIntegrationPanel() {
             Text("Modo/UID: ${uidLabel(report.serverUid)}")
             Text("Shizuku API: ${if (report.serverVersion >= 0) report.serverVersion else "—"}")
             Text("Contexto SELinux: ${report.selinuxContext}")
-            Text("UserService: ${report.userServiceIdentity}")
 
             Text(
                 "MODIFY_AUDIO_ROUTING: ${yesNo(report.modifyAudioRoutingGranted)}",
@@ -67,25 +69,10 @@ internal fun ShizukuIntegrationPanel() {
                 "Dumpsys: Audio ${okNo(report.audioServiceReadable)} • " +
                     "Flinger ${okNo(report.audioFlingerReadable)} • Policy ${okNo(report.audioPolicyReadable)}"
             )
-            Text("AppOps RECORD_AUDIO: ${okNo(report.appOpsReadable)}")
-            Text("Configs privilegiadas: ${okNo(report.privilegedConfigsReadable)}")
             Text("VOICE_COMMUNICATION runtime: ${yesNo(report.voiceCommunicationSeen)}")
-            Text("Preprocess runtime/config: ${yesNo(report.preprocessSeen)}")
             Text(
                 "Efeitos encontrados: ${report.nativeEffectHints.ifEmpty { listOf("nenhum confirmado") }.joinToString(" • ")}"
             )
-
-            if (report.recordingPackageHints.isNotEmpty()) {
-                Text("Apps/pacotes ligados à captura:", style = MaterialTheme.typography.labelLarge)
-                report.recordingPackageHints.forEach { Text("• $it", style = MaterialTheme.typography.bodySmall) }
-            }
-
-            if (report.captureActivityHints.isNotEmpty()) {
-                Text("Pistas da cadeia de captura:", style = MaterialTheme.typography.labelLarge)
-                report.captureActivityHints.take(5).forEach {
-                    Text("• $it", style = MaterialTheme.typography.bodySmall)
-                }
-            }
 
             Text(
                 "Veredito: ${verdictLabel(report.verdict)}",
@@ -93,6 +80,61 @@ internal fun ShizukuIntegrationPanel() {
                 style = MaterialTheme.typography.titleSmall,
             )
             Text(report.recommendation, color = MaterialTheme.colorScheme.primary)
+
+            if (report.recordingPackageHints.isNotEmpty()) {
+                Text("Apps/pacotes ligados à captura:", style = MaterialTheme.typography.labelLarge)
+                report.recordingPackageHints.take(6).forEach {
+                    Text("• $it", style = MaterialTheme.typography.bodySmall)
+                }
+            }
+
+            Text("Game Native Effects", style = MaterialTheme.typography.titleMedium)
+            Text(
+                if (report.gameBridgeEnabled) "Estado: ATIVO" else "Estado: DESATIVADO",
+                color = if (report.gameBridgeEnabled) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
+            )
+            Text(report.gameBridgeStatus, style = MaterialTheme.typography.bodySmall)
+
+            if (report.activeRecordingSnapshot != "—") {
+                Text("Sessões de gravação:", style = MaterialTheme.typography.labelLarge)
+                report.activeRecordingSnapshot
+                    .lineSequence()
+                    .take(5)
+                    .forEach { Text(it, style = MaterialTheme.typography.bodySmall) }
+            }
+
+            val bridgeReady = report.state == ShizukuBridgeState.READY_SHELL ||
+                report.state == ShizukuBridgeState.READY_ROOT
+
+            if (bridgeReady) {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    if (report.gameBridgeEnabled) {
+                        Button(onClick = { bridge.setGameBridgeEnabled(false) }) {
+                            Text("Desativar Game NS")
+                        }
+                    } else {
+                        Button(
+                            enabled = report.modifyAudioRoutingGranted || report.modifyDefaultAudioEffectsGranted,
+                            onClick = {
+                                stopLocalEngine(appContext)
+                                onBeforeEnableGameBridge()
+                                bridge.setGameBridgeEnabled(true)
+                            },
+                        ) {
+                            Text("Ativar Game NS")
+                        }
+                    }
+
+                    OutlinedButton(onClick = { bridge.refreshGameBridgeStatus() }) {
+                        Text("Atualizar")
+                    }
+                }
+
+                Text(
+                    "Ao ativar, o motor local do ClearMic é desligado para não disputar o microfone. O daemon Shizuku observa sessões MIC/VOICE_COMMUNICATION e tenta anexar Noise Suppressor; AEC só é ativado em VOICE_COMMUNICATION. Quando a sessão termina ou você desativa o modo, os efeitos criados pelo ClearMic são liberados.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
 
             if (report.scanDurationMs > 0L) {
                 Text("Último scan: ${report.scanDurationMs} ms", style = MaterialTheme.typography.bodySmall)
@@ -123,10 +165,19 @@ internal fun ShizukuIntegrationPanel() {
             }
 
             Text(
-                "Segurança: esta versão usa Shizuku somente para leitura/diagnóstico. Nenhum comando de escrita, remount, setprop de áudio ou edição de audio_effects é executado.",
+                "Segurança: Game Native Effects é transitório. O alpha11 não faz remount, não edita audio_effects, não grava em /system ou /vendor e não altera política persistente de áudio.",
                 style = MaterialTheme.typography.bodySmall,
             )
         }
+    }
+}
+
+private fun stopLocalEngine(context: Context) {
+    runCatching {
+        context.startService(
+            Intent(context, GameMicService::class.java)
+                .setAction(GameMicService.ACTION_STOP)
+        )
     }
 }
 
@@ -156,7 +207,7 @@ private fun stateLabel(state: ShizukuBridgeState): String = when (state) {
 private fun verdictLabel(verdict: GameBridgeVerdict): String = when (verdict) {
     GameBridgeVerdict.SHIZUKU_NOT_READY -> "SHIZUKU AINDA NÃO PRONTO"
     GameBridgeVerdict.DIAGNOSTICS_ONLY -> "SHIZUKU SHELL — DIAGNÓSTICO"
-    GameBridgeVerdict.ROUTING_PERMISSION_CANDIDATE -> "SHIZUKU — ROTA BINDER CANDIDATA"
+    GameBridgeVerdict.ROUTING_PERMISSION_CANDIDATE -> "GAME EFFECT SESSION BRIDGE CANDIDATE"
     GameBridgeVerdict.ROOT_SYSTEM_BRIDGE_READY -> "ROOT — SYSTEM BRIDGE PRONTO PARA PROTÓTIPO"
 }
 

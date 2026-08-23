@@ -55,6 +55,9 @@ data class PrivilegedAudioReport(
     val nativeEffectHints: List<String> = emptyList(),
     val recordingPackageHints: List<String> = emptyList(),
     val captureActivityHints: List<String> = emptyList(),
+    val gameBridgeEnabled: Boolean = false,
+    val gameBridgeStatus: String = "DISABLED",
+    val activeRecordingSnapshot: String = "—",
     val verdict: GameBridgeVerdict = GameBridgeVerdict.SHIZUKU_NOT_READY,
     val recommendation: String = "Inicie o Shizuku e conceda acesso ao ClearMic.",
     val scanDurationMs: Long = 0L,
@@ -75,7 +78,7 @@ class ShizukuAudioBridge(
 ) {
     companion object {
         private const val PERMISSION_REQUEST_CODE = 4109
-        private const val USER_SERVICE_VERSION = 1
+        private const val USER_SERVICE_VERSION = 2
         private const val MAX_HINT_LINES = 8
     }
 
@@ -91,7 +94,7 @@ class ShizukuAudioBridge(
         Shizuku.UserServiceArgs(
             ComponentName(appContext.packageName, ShizukuAudioUserService::class.java.name)
         )
-            .daemon(false)
+            .daemon(true)
             .tag("clearmic-audio-bridge")
             .version(USER_SERVICE_VERSION)
             .processNameSuffix("clearmic_shizuku_audio")
@@ -157,6 +160,8 @@ class ShizukuAudioBridge(
         runCatching { Shizuku.removeBinderDeadListener(binderDeadListener) }
         runCatching { Shizuku.removeRequestPermissionResultListener(permissionResultListener) }
         if (isBinderAlive()) {
+            // false only disconnects this UI client. The daemon UserService keeps Game
+            // Native Effects alive while the user is inside a game.
             runCatching { Shizuku.unbindUserService(serviceArgs, serviceConnection, false) }
         }
         remote = null
@@ -200,6 +205,53 @@ class ShizukuAudioBridge(
 
     fun refresh() {
         evaluateBinderState(bindIfAllowed = true, forceScan = true)
+    }
+
+    fun setGameBridgeEnabled(enabled: Boolean) {
+        val service = remote
+        if (service == null) {
+            evaluateBinderState(bindIfAllowed = true)
+            ShizukuAudioRuntime.publish(
+                currentBaseReport().copy(
+                    lastError = "UserService ainda não conectado",
+                    recommendation = "Aguarde a conexão do Shizuku e tente novamente.",
+                )
+            )
+            return
+        }
+
+        scope.launch {
+            runCatching {
+                val status = service.setGameBridgeEnabled(enabled).orEmpty()
+                val snapshot = service.getActiveRecordingSnapshot().orEmpty()
+                ShizukuAudioRuntime.publish(
+                    currentBaseReport().copy(
+                        gameBridgeEnabled = enabled && !status.startsWith("ERROR"),
+                        gameBridgeStatus = status.ifBlank { if (enabled) "ENABLED" else "DISABLED" },
+                        activeRecordingSnapshot = snapshot.ifBlank { "—" },
+                        lastError = if (status.startsWith("ERROR")) status else null,
+                    )
+                )
+            }.onFailure { error -> publishError("Falha ao alterar Game Native Effects", error) }
+        }
+    }
+
+    fun refreshGameBridgeStatus() {
+        val service = remote ?: return
+        scope.launch {
+            runCatching {
+                val status = service.getGameBridgeStatus().orEmpty()
+                val snapshot = service.getActiveRecordingSnapshot().orEmpty()
+                val enabled = status.startsWith("ENABLED") || status.startsWith("ACTIVE")
+                ShizukuAudioRuntime.publish(
+                    currentBaseReport().copy(
+                        gameBridgeEnabled = enabled,
+                        gameBridgeStatus = status.ifBlank { "—" },
+                        activeRecordingSnapshot = snapshot.ifBlank { "—" },
+                    )
+                )
+            }.onFailure { error -> publishError("Falha ao ler Game Native Effects", error) }
+        }
     }
 
     private fun evaluateBinderState(bindIfAllowed: Boolean, forceScan: Boolean = false) {
@@ -268,7 +320,7 @@ class ShizukuAudioBridge(
             ShizukuAudioRuntime.publish(
                 currentBaseReport().copy(
                     state = ShizukuBridgeState.SCANNING,
-                    recommendation = "Lendo AudioService, AudioFlinger, AudioPolicy e cadeias de efeitos…",
+                    recommendation = "Lendo AudioService, AudioFlinger, AudioPolicy e sessões de gravação…",
                 )
             )
 
@@ -288,8 +340,11 @@ class ShizukuAudioBridge(
                 val policy = service.runProbe("audio_policy").orEmpty()
                 val appOps = service.runProbe("record_appops").orEmpty()
                 val configs = service.runProbe("audio_configs").orEmpty()
+                val recordingSnapshot = service.getActiveRecordingSnapshot().orEmpty()
+                val gameStatus = service.getGameBridgeStatus().orEmpty()
+                val gameEnabled = gameStatus.startsWith("ENABLED") || gameStatus.startsWith("ACTIVE")
 
-                val combined = listOf(audio, flinger, policy, configs).joinToString("\n").lowercase(Locale.ROOT)
+                val combined = listOf(audio, flinger, policy, configs, recordingSnapshot).joinToString("\n").lowercase(Locale.ROOT)
                 val voiceCommunicationSeen =
                     "voice_communication" in combined ||
                         "voice communication" in combined ||
@@ -302,8 +357,8 @@ class ShizukuAudioBridge(
                     if (containsEffect(combined, "agc", "automatic_gain")) add("AGC")
                 }
 
-                val packageHints = extractPackageHints(audio + "\n" + appOps)
-                val captureHints = extractCaptureHints(audio + "\n" + flinger + "\n" + policy)
+                val packageHints = extractPackageHints(audio + "\n" + appOps + "\n" + recordingSnapshot)
+                val captureHints = extractCaptureHints(audio + "\n" + flinger + "\n" + policy + "\n" + recordingSnapshot)
 
                 val rootMode = serverUid == 0 || identity.contains("uid=0") || identityProbe.contains("uid=0")
                 val verdict = when {
@@ -314,11 +369,11 @@ class ShizukuAudioBridge(
 
                 val recommendation = when (verdict) {
                     GameBridgeVerdict.ROOT_SYSTEM_BRIDGE_READY ->
-                        "Shizuku está em modo ROOT. O aparelho está pronto para a próxima etapa: bridge system-wide com backup/rollback antes de qualquer alteração."
+                        "Shizuku está em modo ROOT. Game Native Effects pode ser testado agora; bridge custom system-wide continua disponível para a próxima camada."
                     GameBridgeVerdict.ROUTING_PERMISSION_CANDIDATE ->
-                        "O Shizuku shell possui pelo menos uma permissão crítica de áudio. Próxima etapa: validar uma rota Binder controlada antes de tocar em arquivos do sistema."
+                        "Permissões críticas confirmadas. O alpha11 pode anexar NS/AEC nativos diretamente às sessões de captura de jogos/voz sem editar arquivos do sistema."
                     GameBridgeVerdict.DIAGNOSTICS_ONLY ->
-                        "Shizuku shell funciona para diagnóstico, mas não recebeu permissão suficiente para roteamento universal. Ainda assim ele consegue mapear quem usa o microfone e a cadeia ativa; para bridge total será necessário root/Sui ou integração de sistema."
+                        "Shizuku shell funciona para diagnóstico, mas não recebeu permissão suficiente para controlar sessões de captura neste aparelho."
                     GameBridgeVerdict.SHIZUKU_NOT_READY ->
                         "Inicie e autorize o Shizuku."
                 }
@@ -343,6 +398,9 @@ class ShizukuAudioBridge(
                         nativeEffectHints = nativeEffects,
                         recordingPackageHints = packageHints,
                         captureActivityHints = captureHints,
+                        gameBridgeEnabled = gameEnabled,
+                        gameBridgeStatus = gameStatus.ifBlank { "DISABLED" },
+                        activeRecordingSnapshot = recordingSnapshot.ifBlank { "—" },
                         verdict = verdict,
                         recommendation = recommendation,
                         scanDurationMs = SystemClock.elapsedRealtime() - startedAt,
@@ -378,7 +436,7 @@ class ShizukuAudioBridge(
             currentBaseReport().copy(
                 state = ShizukuBridgeState.ERROR,
                 lastError = "$prefix: ${error.javaClass.simpleName}: ${error.message ?: "sem detalhe"}",
-                recommendation = "O ClearMic manteve o áudio intacto. Tente reconectar o Shizuku; nenhuma alteração de sistema foi aplicada.",
+                recommendation = "A alteração foi interrompida; o ClearMic não edita arquivos ou políticas persistentes nesta etapa.",
             )
         )
     }
@@ -401,7 +459,7 @@ class ShizukuAudioBridge(
         val packageRegex = Regex("\\b[a-zA-Z][a-zA-Z0-9_]*(?:\\.[a-zA-Z0-9_]+){2,}\\b")
         val interestingLines = text.lineSequence().filter { line ->
             val lower = line.lowercase(Locale.ROOT)
-            "record" in lower || "capture" in lower || "package" in lower || "active" in lower
+            "record" in lower || "capture" in lower || "package" in lower || "active" in lower || "pkg=" in lower
         }
         return interestingLines
             .flatMap { packageRegex.findAll(it).map { match -> match.value } }
@@ -416,8 +474,8 @@ class ShizukuAudioBridge(
             .map { it.trim() }
             .filter { line ->
                 val lower = line.lowercase(Locale.ROOT)
-                line.length in 4..220 &&
-                    ("record" in lower || "capture" in lower || "voice_communication" in lower || "silenced" in lower)
+                line.length in 4..260 &&
+                    ("record" in lower || "capture" in lower || "voice_communication" in lower || "silenced" in lower || "session=" in lower)
             }
             .distinct()
             .take(MAX_HINT_LINES)
