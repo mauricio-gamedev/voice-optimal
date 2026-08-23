@@ -115,7 +115,7 @@ class MainActivity : ComponentActivity() {
             ) {
                 Text("ClearMic", style = MaterialTheme.typography.headlineLarge)
                 Text(
-                    "Milestone 3 • native audio + DSP • ${BuildConfig.VERSION_NAME}",
+                    "Milestone 3 • capture hotfix • ${BuildConfig.VERSION_NAME}",
                     style = MaterialTheme.typography.labelLarge,
                     color = MaterialTheme.colorScheme.primary,
                 )
@@ -126,6 +126,14 @@ class MainActivity : ComponentActivity() {
                         Text("Estado: ${state.name}")
                         Text("Backend: ${stats.engineBackend}")
                         Text("DSP: ${stats.dspBackend}")
+
+                        stats.fallbackReason?.let { reason ->
+                            Text(
+                                "Proteção automática: $reason",
+                                color = MaterialTheme.colorScheme.primary,
+                            )
+                        }
+
                         Text("Nível: %.1f dBFS".format(stats.rmsDb))
                         LinearProgressIndicator(
                             progress = { stats.peak },
@@ -138,14 +146,18 @@ class MainActivity : ComponentActivity() {
 
                         if (stats.capturedFrames > 48_000L && stats.rmsDb <= -119.5f) {
                             Text(
-                                "Diagnóstico: o stream está entregando frames, mas eles estão silenciosos. Vamos investigar rota/fonte do microfone.",
+                                "Diagnóstico: este backend também está recebendo frames silenciosos. A rota/fonte do microfone ainda precisa ser isolada.",
                                 color = MaterialTheme.colorScheme.error,
                             )
                         }
 
-                        Text("Noise Suppressor: ${if (stats.noiseSuppressorEnabled) "ON" else "OFF"}")
-                        Text("Echo Canceler: ${if (stats.echoCancelerEnabled) "ON" else "OFF"}")
+                        Text("Noise Suppressor Android: ${if (stats.noiseSuppressorEnabled) "ON" else "OFF"}")
+                        Text("Echo Canceler Android: ${if (stats.echoCancelerEnabled) "ON" else "OFF"}")
                         Text("AGC Android: ${if (stats.automaticGainEnabled) "ON" else "OFF"}")
+                        Text(
+                            "Hotfix alpha04 usa captura neutra sem pré-processamento vendor para eliminar incompatibilidades do firmware durante o diagnóstico.",
+                            style = MaterialTheme.typography.bodySmall,
+                        )
                     }
                 }
 
@@ -186,7 +198,7 @@ class MainActivity : ComponentActivity() {
 
                 Spacer(Modifier.height(4.dp))
                 Text(
-                    "Camada 2 agora tenta AAudio/C++ primeiro e mantém AudioRecord como fallback. A Camada 3 inicia com DSP adaptativo nativo de baixo custo; WebRTC APM/RNNoise entram após medirmos CPU, xruns e captura real neste núcleo.",
+                    "O alpha04 prioriza estabilidade: tenta AAudio com fonte neutra e, se detectar dois segundos de frames zerados, migra automaticamente para AudioRecord seguro. A Camada 3 pesada continua pausada até CPU e captura ficarem estáveis.",
                     style = MaterialTheme.typography.bodyMedium,
                 )
             }

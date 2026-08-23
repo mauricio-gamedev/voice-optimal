@@ -2,10 +2,12 @@ package io.github.astromg01.clearmic.audio
 
 internal class NativeAudioBackend : AudioBackend {
     private val bridge = NativeAudioBridge()
+    private val statsBuffer = FloatArray(5)
     private var opened = false
 
     override val engineName: String = "AAudio C++"
     override val dspName: String = "Native Adaptive V1"
+    override val allowPlatformPreprocessing: Boolean = false
 
     override fun open(): Int {
         check(NativeAudioBridge.isLoaded) { "Native audio library failed to load" }
@@ -17,10 +19,9 @@ internal class NativeAudioBackend : AudioBackend {
 
     override fun configurePlatformEffects(stats: AudioStats) {
         if (!opened) return
-        bridge.nativeConfigurePlatformEffects(
-            stats.noiseSuppressorEnabled,
-            stats.automaticGainEnabled,
-        )
+        // Native capture intentionally runs software-only in alpha04. This avoids
+        // vendor AEC/NS implementations that can mute AAudio sessions on some devices.
+        bridge.nativeConfigurePlatformEffects(false, false)
     }
 
     override fun start() {
@@ -31,13 +32,13 @@ internal class NativeAudioBackend : AudioBackend {
 
     override fun snapshot(): BackendSnapshot {
         if (!opened) return BackendSnapshot()
-        val values = bridge.nativeGetStats()
+        bridge.nativeFillStats(statsBuffer)
         return BackendSnapshot(
-            rmsDb = values.getOrElse(0) { -120f },
-            peak = values.getOrElse(1) { 0f }.coerceIn(0f, 1f),
-            voiceProbability = values.getOrElse(2) { 0f }.coerceIn(0f, 1f),
-            noiseFloorDb = values.getOrElse(3) { -120f },
-            xrunCount = values.getOrElse(4) { 0f }.toInt().coerceAtLeast(0),
+            rmsDb = statsBuffer[0],
+            peak = statsBuffer[1].coerceIn(0f, 1f),
+            voiceProbability = statsBuffer[2].coerceIn(0f, 1f),
+            noiseFloorDb = statsBuffer[3],
+            xrunCount = statsBuffer[4].toInt().coerceAtLeast(0),
             capturedFrames = bridge.nativeGetFramesProcessed().coerceAtLeast(0L),
         )
     }

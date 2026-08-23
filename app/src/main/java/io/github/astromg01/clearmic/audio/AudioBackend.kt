@@ -13,6 +13,13 @@ internal interface AudioBackend {
     val engineName: String
     val dspName: String
 
+    /**
+     * Vendor AEC/NS/AGC can be useful on AudioRecord, but some devices return
+     * silent data when those effects are attached to a native AAudio session.
+     */
+    val allowPlatformPreprocessing: Boolean
+        get() = true
+
     /** Opens the capture device and returns an Android audio session id when available. */
     fun open(): Int
 

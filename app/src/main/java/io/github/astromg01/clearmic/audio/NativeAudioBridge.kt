@@ -11,7 +11,7 @@ internal class NativeAudioBridge {
     external fun nativeGetSessionId(): Int
     external fun nativeConfigurePlatformEffects(noiseSuppressorEnabled: Boolean, agcEnabled: Boolean)
     external fun nativeStart(): Int
-    external fun nativeGetStats(): FloatArray
+    external fun nativeFillStats(output: FloatArray)
     external fun nativeGetFramesProcessed(): Long
     external fun nativeStop()
 }
