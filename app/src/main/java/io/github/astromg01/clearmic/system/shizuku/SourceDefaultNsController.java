@@ -11,6 +11,10 @@ import java.util.UUID;
 
 /** Registers transient source-default NS effects before a game opens its recorder. */
 final class SourceDefaultNsController {
+    // AudioEffect.EFFECT_TYPE_NULL is hidden from the public SDK stubs. AOSP defines
+    // it as the all-zero effect UUID, so keep the value locally for hidden-API calls.
+    private static final UUID NULL_EFFECT_UUID = new UUID(0L, 0L);
+
     private final List<Object> defaults = new ArrayList<>();
     private String status = "SOURCE_DEFAULT: disabled";
 
@@ -40,7 +44,7 @@ final class SourceDefaultNsController {
 
             // First prefer type-based selection; AudioPolicy chooses the implementation.
             try {
-                effect = create(AudioEffect.EFFECT_TYPE_NS, AudioEffect.EFFECT_TYPE_NULL, source);
+                effect = create(AudioEffect.EFFECT_TYPE_NS, NULL_EFFECT_UUID, source);
                 defaults.add(effect);
                 results.add(sourceName(source) + "=type:OK");
                 continue;
@@ -51,7 +55,7 @@ final class SourceDefaultNsController {
             // If type-based selection fails, try concrete implementations discovered on device.
             for (UUID uuid : nsUuids) {
                 try {
-                    effect = create(AudioEffect.EFFECT_TYPE_NULL, uuid, source);
+                    effect = create(NULL_EFFECT_UUID, uuid, source);
                     defaults.add(effect);
                     results.add(sourceName(source) + "=uuid:" + shortUuid(uuid) + ":OK");
                     lastError = null;
