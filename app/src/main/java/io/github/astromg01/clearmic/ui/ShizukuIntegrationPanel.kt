@@ -43,7 +43,7 @@ internal fun ShizukuIntegrationPanel() {
         ) {
             Text("Shizuku — Bridge privilegiado", style = MaterialTheme.typography.titleMedium)
             Text(
-                "Alpha09 faz a etapa inteira de diagnóstico privilegiado sem alterar roteamento ou arquivos do sistema.",
+                "Alpha10 corrige a entrega do Binder do Shizuku pelo provider oficial e mantém o diagnóstico privilegiado read-only.",
                 style = MaterialTheme.typography.bodySmall,
             )
 
@@ -143,8 +143,8 @@ private fun openShizuku(context: Context) {
 }
 
 private fun stateLabel(state: ShizukuBridgeState): String = when (state) {
-    ShizukuBridgeState.NOT_RUNNING -> "NÃO EXECUTANDO"
-    ShizukuBridgeState.PERMISSION_REQUIRED -> "AGUARDANDO AUTORIZAÇÃO"
+    ShizukuBridgeState.NOT_RUNNING -> "BINDER DO SHIZUKU NÃO CONECTADO"
+    ShizukuBridgeState.PERMISSION_REQUIRED -> "SHIZUKU DETECTADO • AGUARDANDO AUTORIZAÇÃO"
     ShizukuBridgeState.PERMISSION_DENIED -> "PERMISSÃO NEGADA"
     ShizukuBridgeState.CONNECTING -> "CONECTANDO USERSERVICE"
     ShizukuBridgeState.SCANNING -> "DIAGNÓSTICO EM ANDAMENTO"
