@@ -1,10 +1,10 @@
 package io.github.astromg01.clearmic.system.shizuku;
 
 import android.content.Context;
-import android.media.AudioEffect;
 import android.media.AudioManager;
 import android.media.AudioRecordingConfiguration;
 import android.media.MediaRecorder;
+import android.media.audiofx.AudioEffect;
 import android.media.audiofx.AcousticEchoCanceler;
 import android.media.audiofx.NoiseSuppressor;
 import android.os.Process;
