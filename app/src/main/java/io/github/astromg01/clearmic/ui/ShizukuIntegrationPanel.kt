@@ -2,6 +2,7 @@ package io.github.astromg01.clearmic.ui
 
 import android.content.Context
 import android.content.Intent
+import android.os.SystemClock
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -16,15 +17,22 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import io.github.astromg01.clearmic.audio.AudioRuntime
+import io.github.astromg01.clearmic.audio.EngineState
 import io.github.astromg01.clearmic.service.GameMicService
 import io.github.astromg01.clearmic.system.shizuku.GameBridgeVerdict
 import io.github.astromg01.clearmic.system.shizuku.ShizukuAudioBridge
 import io.github.astromg01.clearmic.system.shizuku.ShizukuAudioRuntime
 import io.github.astromg01.clearmic.system.shizuku.ShizukuBridgeState
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 @Composable
 internal fun ShizukuIntegrationPanel(
@@ -33,10 +41,47 @@ internal fun ShizukuIntegrationPanel(
     val appContext = LocalContext.current.applicationContext
     val bridge = remember(appContext) { ShizukuAudioBridge(appContext) }
     val report by ShizukuAudioRuntime.report.collectAsState()
+    val scope = rememberCoroutineScope()
+    var handoffInProgress by remember { mutableStateOf(false) }
+    var handoffMessage by remember { mutableStateOf<String?>(null) }
 
     DisposableEffect(bridge) {
         bridge.start()
         onDispose { bridge.stop() }
+    }
+
+    fun startGameBridgeWithHandoff() {
+        if (handoffInProgress) return
+        handoffInProgress = true
+        handoffMessage = "Parando a captura local antes de entregar o microfone ao jogo…"
+
+        scope.launch {
+            stopLocalEngine(appContext)
+            onBeforeEnableGameBridge()
+
+            val deadline = SystemClock.elapsedRealtime() + 4_000L
+            while (
+                AudioRuntime.state.value != EngineState.IDLE &&
+                AudioRuntime.state.value != EngineState.ERROR &&
+                SystemClock.elapsedRealtime() < deadline
+            ) {
+                delay(50L)
+            }
+
+            val localReleased = AudioRuntime.state.value == EngineState.IDLE ||
+                AudioRuntime.state.value == EngineState.ERROR
+
+            if (localReleased) {
+                handoffMessage = "Microfone local liberado. Ativando monitoramento das sessões do jogo…"
+                bridge.setGameBridgeEnabled(true)
+                delay(250L)
+                bridge.refreshGameBridgeStatus()
+                handoffMessage = null
+            } else {
+                handoffMessage = "Falha de handoff: a captura local não encerrou em 4 s. O Game NS não foi ativado para evitar disputa do microfone."
+            }
+            handoffInProgress = false
+        }
     }
 
     Card(modifier = Modifier.fillMaxWidth()) {
@@ -46,7 +91,7 @@ internal fun ShizukuIntegrationPanel(
         ) {
             Text("Shizuku — Game Audio Bridge", style = MaterialTheme.typography.titleMedium)
             Text(
-                "Alpha11 usa o UserService como daemon: ele pode continuar ativo enquanto você sai do ClearMic e entra no jogo.",
+                "Alpha12 confirma que o AAudio local foi encerrado antes de o daemon assumir o monitoramento das sessões externas.",
                 style = MaterialTheme.typography.bodySmall,
             )
 
@@ -95,8 +140,12 @@ internal fun ShizukuIntegrationPanel(
             )
             Text(report.gameBridgeStatus, style = MaterialTheme.typography.bodySmall)
 
+            handoffMessage?.let {
+                Text(it, color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.bodySmall)
+            }
+
             if (report.activeRecordingSnapshot != "—") {
-                Text("Sessões de gravação:", style = MaterialTheme.typography.labelLarge)
+                Text("Sessões de gravação agora:", style = MaterialTheme.typography.labelLarge)
                 report.activeRecordingSnapshot
                     .lineSequence()
                     .take(5)
@@ -109,29 +158,32 @@ internal fun ShizukuIntegrationPanel(
             if (bridgeReady) {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     if (report.gameBridgeEnabled) {
-                        Button(onClick = { bridge.setGameBridgeEnabled(false) }) {
+                        Button(
+                            enabled = !handoffInProgress,
+                            onClick = { bridge.setGameBridgeEnabled(false) },
+                        ) {
                             Text("Desativar Game NS")
                         }
                     } else {
                         Button(
-                            enabled = report.modifyAudioRoutingGranted || report.modifyDefaultAudioEffectsGranted,
-                            onClick = {
-                                stopLocalEngine(appContext)
-                                onBeforeEnableGameBridge()
-                                bridge.setGameBridgeEnabled(true)
-                            },
+                            enabled = !handoffInProgress &&
+                                (report.modifyAudioRoutingGranted || report.modifyDefaultAudioEffectsGranted),
+                            onClick = { startGameBridgeWithHandoff() },
                         ) {
-                            Text("Ativar Game NS")
+                            Text(if (handoffInProgress) "Liberando mic…" else "Ativar Game NS")
                         }
                     }
 
-                    OutlinedButton(onClick = { bridge.refreshGameBridgeStatus() }) {
+                    OutlinedButton(
+                        enabled = !handoffInProgress,
+                        onClick = { bridge.refreshGameBridgeStatus() },
+                    ) {
                         Text("Atualizar")
                     }
                 }
 
                 Text(
-                    "Ao ativar, o motor local do ClearMic é desligado para não disputar o microfone. O daemon Shizuku observa sessões MIC/VOICE_COMMUNICATION e tenta anexar Noise Suppressor; AEC só é ativado em VOICE_COMMUNICATION. Quando a sessão termina ou você desativa o modo, os efeitos criados pelo ClearMic são liberados.",
+                    "Ao ativar, o alpha12 espera a captura local chegar a IDLE antes de ligar o daemon. O daemon observa MIC/VOICE_COMMUNICATION, tenta anexar Noise Suppressor e usa AEC somente em VOICE_COMMUNICATION. O último alvo externo detectado fica guardado no status mesmo depois que a sessão do jogo fecha.",
                     style = MaterialTheme.typography.bodySmall,
                 )
             }
@@ -156,7 +208,8 @@ internal fun ShizukuIntegrationPanel(
                 }
 
                 OutlinedButton(
-                    enabled = report.state != ShizukuBridgeState.SCANNING &&
+                    enabled = !handoffInProgress &&
+                        report.state != ShizukuBridgeState.SCANNING &&
                         report.state != ShizukuBridgeState.CONNECTING,
                     onClick = { bridge.refresh() },
                 ) {
@@ -165,7 +218,7 @@ internal fun ShizukuIntegrationPanel(
             }
 
             Text(
-                "Segurança: Game Native Effects é transitório. O alpha11 não faz remount, não edita audio_effects, não grava em /system ou /vendor e não altera política persistente de áudio.",
+                "Segurança: Game Native Effects é transitório. O alpha12 não faz remount, não edita audio_effects, não grava em /system ou /vendor e não altera política persistente de áudio.",
                 style = MaterialTheme.typography.bodySmall,
             )
         }

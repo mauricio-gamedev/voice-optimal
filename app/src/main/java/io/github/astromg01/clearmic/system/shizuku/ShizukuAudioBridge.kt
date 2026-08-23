@@ -78,7 +78,7 @@ class ShizukuAudioBridge(
 ) {
     companion object {
         private const val PERMISSION_REQUEST_CODE = 4109
-        private const val USER_SERVICE_VERSION = 2
+        private const val USER_SERVICE_VERSION = 3
         private const val MAX_HINT_LINES = 8
     }
 
@@ -160,8 +160,6 @@ class ShizukuAudioBridge(
         runCatching { Shizuku.removeBinderDeadListener(binderDeadListener) }
         runCatching { Shizuku.removeRequestPermissionResultListener(permissionResultListener) }
         if (isBinderAlive()) {
-            // false only disconnects this UI client. The daemon UserService keeps Game
-            // Native Effects alive while the user is inside a game.
             runCatching { Shizuku.unbindUserService(serviceArgs, serviceConnection, false) }
         }
         remote = null
@@ -371,7 +369,7 @@ class ShizukuAudioBridge(
                     GameBridgeVerdict.ROOT_SYSTEM_BRIDGE_READY ->
                         "Shizuku está em modo ROOT. Game Native Effects pode ser testado agora; bridge custom system-wide continua disponível para a próxima camada."
                     GameBridgeVerdict.ROUTING_PERMISSION_CANDIDATE ->
-                        "Permissões críticas confirmadas. O alpha11 pode anexar NS/AEC nativos diretamente às sessões de captura de jogos/voz sem editar arquivos do sistema."
+                        "Permissões críticas confirmadas. O alpha12 pode anexar NS/AEC nativos às sessões externas depois de confirmar que o motor local liberou o microfone."
                     GameBridgeVerdict.DIAGNOSTICS_ONLY ->
                         "Shizuku shell funciona para diagnóstico, mas não recebeu permissão suficiente para controlar sessões de captura neste aparelho."
                     GameBridgeVerdict.SHIZUKU_NOT_READY ->
