@@ -33,6 +33,7 @@ final class SourceDefaultNsController {
     };
 
     private final List<Object> defaults = new ArrayList<>();
+    private final List<String> activeVendorNames = new ArrayList<>();
     private String profile = PROFILE_BALANCED;
     private String status = "SOURCE_DEFAULT: disabled";
     private int registeredNoiseSuppressors;
@@ -55,10 +56,25 @@ final class SourceDefaultNsController {
         return registeredNoiseSuppressors > 0;
     }
 
+    boolean hasVendorEnhancerReady() {
+        return registeredVendorEnhancers > 0;
+    }
+
+    String verifiedVendorEffects(String effectsText) {
+        if (effectsText == null || effectsText.isEmpty() || activeVendorNames.isEmpty()) return "";
+        String lower = effectsText.toLowerCase(Locale.ROOT);
+        List<String> found = new ArrayList<>();
+        for (String name : activeVendorNames) {
+            if (lower.contains(name.toLowerCase(Locale.ROOT)) && !found.contains(name)) found.add(name);
+        }
+        return String.join(",", found);
+    }
+
     String enable() {
         releaseInternal(false);
         registeredNoiseSuppressors = 0;
         registeredVendorEnhancers = 0;
+        activeVendorNames.clear();
 
         Map<UUID, List<UUID>> implementations = effectImplementations();
         AudioEffect.Descriptor[] descriptors = safeQueryEffects();
@@ -99,7 +115,11 @@ final class SourceDefaultNsController {
                         priority,
                         results
                 );
-                if (loadedRecognition || loadedCommunication) registeredVendorEnhancers++;
+                if (loadedRecognition || loadedCommunication) {
+                    registeredVendorEnhancers++;
+                    String name = compactName(descriptor.name);
+                    if (!activeVendorNames.contains(name)) activeVendorNames.add(name);
+                }
                 priority = Math.max(50, priority - 5);
             }
         } else {
@@ -132,6 +152,7 @@ final class SourceDefaultNsController {
             }
         }
         defaults.clear();
+        activeVendorNames.clear();
         registeredNoiseSuppressors = 0;
         registeredVendorEnhancers = 0;
         if (updateStatus) status = "SOURCE_DEFAULT[" + profile + "]: disabled";
