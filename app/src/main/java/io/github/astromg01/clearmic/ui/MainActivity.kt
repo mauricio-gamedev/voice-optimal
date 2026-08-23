@@ -2,8 +2,10 @@ package io.github.astromg01.clearmic.ui
 
 import android.Manifest
 import android.content.Intent
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -20,6 +22,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -28,28 +31,24 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import io.github.astromg01.clearmic.BuildConfig
 import io.github.astromg01.clearmic.audio.AudioRuntime
 import io.github.astromg01.clearmic.audio.EngineState
+import io.github.astromg01.clearmic.service.BackgroundRuntime
 import io.github.astromg01.clearmic.service.GameMicService
+import io.github.astromg01.clearmic.ui.theme.ClearMicTheme
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
-            MaterialTheme {
+            ClearMicTheme {
                 ClearMicScreen(
-                    onStart = { requestStartFlow() },
                     onStop = { stopEngine() },
+                    onOpenBatterySettings = { openBatterySettings() },
                 )
             }
         }
-    }
-
-    private var deferredStart: (() -> Unit)? = null
-
-    private fun requestStartFlow() {
-        deferredStart = { startEngine() }
-        // Actual permission request is owned by Compose below.
     }
 
     private fun startEngine() {
@@ -62,10 +61,29 @@ class MainActivity : ComponentActivity() {
         startService(intent)
     }
 
+    private fun openBatterySettings() {
+        val opened = runCatching {
+            startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+        }.isSuccess
+
+        if (!opened) {
+            startActivity(
+                Intent(
+                    Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                    Uri.parse("package:$packageName"),
+                )
+            )
+        }
+    }
+
     @Composable
-    private fun ClearMicScreen(onStart: () -> Unit, onStop: () -> Unit) {
+    private fun ClearMicScreen(
+        onStop: () -> Unit,
+        onOpenBatterySettings: () -> Unit,
+    ) {
         val state by AudioRuntime.state.collectAsState()
         val stats by AudioRuntime.stats.collectAsState()
+        val background by BackgroundRuntime.stats.collectAsState()
 
         val permissionLauncher = rememberLauncherForActivityResult(
             ActivityResultContracts.RequestMultiplePermissions()
@@ -93,13 +111,15 @@ class MainActivity : ComponentActivity() {
             ) {
                 Text("ClearMic", style = MaterialTheme.typography.headlineLarge)
                 Text(
-                    "Milestone 1 • motor local de áudio",
+                    "Milestone 2 • background survival • ${BuildConfig.VERSION_NAME}",
                     style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.primary,
                 )
 
                 Card(modifier = Modifier.fillMaxWidth()) {
                     Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                        Text("Estado: ${state.name}", style = MaterialTheme.typography.titleMedium)
+                        Text("Motor de áudio", style = MaterialTheme.typography.titleMedium)
+                        Text("Estado: ${state.name}")
                         Text("Nível: %.1f dBFS".format(stats.rmsDb))
                         LinearProgressIndicator(
                             progress = { stats.peak },
@@ -111,13 +131,29 @@ class MainActivity : ComponentActivity() {
                     }
                 }
 
+                Card(modifier = Modifier.fillMaxWidth()) {
+                    Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text("Sobrevivência em segundo plano", style = MaterialTheme.typography.titleMedium)
+                        Text("Modo persistente: ${if (background.desiredRunning) "ATIVO" else "INATIVO"}")
+                        Text("Recuperações do serviço: ${background.restartCount}")
+                        Text("Uptime do serviço: ${background.serviceUptimeMs / 1000}s")
+                        Text("Memória PSS: %.1f MB".format(background.memoryPssMb))
+                        Text("CPU do processo: %.1f%%".format(background.cpuPercent))
+                        Text(
+                            "Otimização de bateria: ${if (background.batteryOptimizationActive) "ATIVA" else "IGNORADA"}"
+                        )
+                        Text("Último evento: ${background.lastEvent}")
+
+                        OutlinedButton(onClick = onOpenBatterySettings) {
+                            Text("Ajustar bateria")
+                        }
+                    }
+                }
+
                 Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     Button(
                         enabled = state == EngineState.IDLE || state == EngineState.ERROR,
-                        onClick = {
-                            onStart()
-                            requestAndStart()
-                        },
+                        onClick = { requestAndStart() },
                     ) {
                         Text("Ativar motor")
                     }
@@ -132,8 +168,8 @@ class MainActivity : ComponentActivity() {
 
                 Spacer(Modifier.height(4.dp))
                 Text(
-                    "Nesta etapa o ClearMic processa a captura própria para validar latência, efeitos e estabilidade em segundo plano. " +
-                        "Ainda não injeta esse áudio no microfone de outros jogos; o bridge system-wide será uma camada separada.",
+                    "O ClearMic agora mantém a intenção de execução e permite que o Android recupere o foreground service após encerramentos de processo. " +
+                        "Isso não contorna Force Stop nem as regras de privacidade do microfone; a ativação inicial continua sendo uma ação explícita do usuário.",
                     style = MaterialTheme.typography.bodyMedium,
                 )
             }
