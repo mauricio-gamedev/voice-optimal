@@ -6,7 +6,7 @@ internal class NativeAudioBackend : AudioBackend {
     private var opened = false
 
     override val engineName: String = "AAudio C++"
-    override val dspName: String = "Native Adaptive V1"
+    override val dspName: String = "Native Adaptive V2"
     override val allowPlatformPreprocessing: Boolean = false
 
     override fun open(): Int {
@@ -19,8 +19,6 @@ internal class NativeAudioBackend : AudioBackend {
 
     override fun configurePlatformEffects(stats: AudioStats) {
         if (!opened) return
-        // Native capture intentionally runs software-only in alpha04. This avoids
-        // vendor AEC/NS implementations that can mute AAudio sessions on some devices.
         bridge.nativeConfigurePlatformEffects(false, false)
     }
 

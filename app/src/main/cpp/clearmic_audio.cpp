@@ -10,7 +10,8 @@ namespace {
 
 constexpr int32_t kRequestedSampleRate = 48000;
 constexpr int32_t kRequestedChannelCount = 1;
-constexpr int32_t kFramesPerCallback = 480; // 10 ms at 48 kHz when honored by the device.
+constexpr int32_t kFramesPerCallback = 480;
+constexpr int64_t kCalibrationSamples = 72000; // ~1.5 s at 48 kHz.
 constexpr float kEpsilon = 1.0e-7f;
 
 inline float dbFromLinear(float value) {
@@ -36,9 +37,13 @@ public:
     void reset() {
         previousInput_ = 0.0f;
         previousOutput_ = 0.0f;
-        noiseFloorRms_ = 0.0040f;
+        noiseFloorRms_ = 0.0010f;
+        calibrationMinRms_ = 1.0f;
+        calibrationSamples_ = 0;
         suppressionGain_ = 1.0f;
         agcGain_ = 1.0f;
+        voiceProbabilitySmoothed_ = 0.0f;
+        voiceHangoverFrames_ = 0;
         platformNoiseSuppressor_ = false;
         platformAgc_ = false;
     }
@@ -53,7 +58,6 @@ public:
         if (samples == nullptr || frames <= 0) return stats;
 
         double sumSquares = 0.0;
-        float peak = 0.0f;
 
         for (int32_t i = 0; i < frames; ++i) {
             const float x = static_cast<float>(samples[i]) / 32768.0f;
@@ -62,48 +66,91 @@ public:
             previousOutput_ = y;
 
             const float clipped = std::clamp(y, -1.0f, 1.0f);
-            peak = std::max(peak, std::fabs(clipped));
             sumSquares += static_cast<double>(clipped) * static_cast<double>(clipped);
             samples[i] = static_cast<int16_t>(clipped * 32767.0f);
         }
 
         const float rms = static_cast<float>(std::sqrt(sumSquares / static_cast<double>(frames)));
         const float rmsDb = dbFromLinear(rms);
+        const bool calibrating = calibrationSamples_ < kCalibrationSamples;
+
+        if (calibrating) {
+            calibrationSamples_ += frames;
+            calibrationMinRms_ = std::min(calibrationMinRms_, std::max(rms, 0.00015f));
+            noiseFloorRms_ = std::clamp(calibrationMinRms_ * 1.15f, 0.00015f, 0.050f);
+        }
+
         const float previousNoise = std::max(noiseFloorRms_, 0.00015f);
         const float snrDb = 20.0f * std::log10((rms + kEpsilon) / (previousNoise + kEpsilon));
+        const float snrVoice = smoothStep(4.0f, 15.0f, snrDb);
+        const float levelVoice = smoothStep(-57.0f, -31.0f, rmsDb);
 
-        const float snrVoice = smoothStep(2.0f, 15.0f, snrDb);
-        const float levelVoice = smoothStep(-58.0f, -30.0f, rmsDb);
-        const float voiceProbability = std::clamp(0.68f * snrVoice + 0.32f * levelVoice, 0.0f, 1.0f);
+        float rawVoice = calibrating
+            ? (0.35f * levelVoice)
+            : std::clamp(0.76f * snrVoice + 0.24f * levelVoice, 0.0f, 1.0f);
 
-        const float noiseLearn = voiceProbability < 0.35f ? 0.035f : 0.0015f;
-        noiseFloorRms_ = std::clamp(
-            noiseFloorRms_ + noiseLearn * (rms - noiseFloorRms_),
-            0.00015f,
-            0.12f
-        );
+        if (!calibrating) {
+            if (rawVoice >= 0.62f) {
+                voiceHangoverFrames_ = 18;
+            } else if (rawVoice >= 0.42f) {
+                voiceHangoverFrames_ = std::max(voiceHangoverFrames_, 6);
+            } else if (voiceHangoverFrames_ > 0) {
+                --voiceHangoverFrames_;
+            }
+        }
 
-        const float suppressionFloor = platformNoiseSuppressor_ ? 0.72f : 0.34f;
-        const float targetSuppression = suppressionFloor +
-            (1.0f - suppressionFloor) * smoothStep(0.20f, 0.72f, voiceProbability);
-        suppressionGain_ += 0.16f * (targetSuppression - suppressionGain_);
+        if (voiceHangoverFrames_ > 0) {
+            rawVoice = std::max(rawVoice, 0.55f);
+        }
+
+        const float voiceSmoothing = rawVoice > voiceProbabilitySmoothed_ ? 0.34f : 0.08f;
+        voiceProbabilitySmoothed_ += voiceSmoothing * (rawVoice - voiceProbabilitySmoothed_);
+        const float voiceProbability = std::clamp(voiceProbabilitySmoothed_, 0.0f, 1.0f);
+
+        if (!calibrating) {
+            float learnRate;
+            if (rms < noiseFloorRms_) {
+                // Follow quieter conditions quickly so an old loud room estimate cannot poison VAD.
+                learnRate = voiceProbability < 0.35f ? 0.22f : 0.08f;
+            } else {
+                // Never let speech rapidly raise the room floor.
+                learnRate = voiceProbability < 0.30f ? 0.0035f : 0.0002f;
+            }
+            noiseFloorRms_ = std::clamp(
+                noiseFloorRms_ + learnRate * (rms - noiseFloorRms_),
+                0.00015f,
+                0.080f
+            );
+        }
+
+        const float suppressionFloor = platformNoiseSuppressor_ ? 0.76f : 0.42f;
+        const float targetSuppression = calibrating
+            ? 0.88f
+            : suppressionFloor + (1.0f - suppressionFloor) * smoothStep(0.22f, 0.72f, voiceProbability);
+        suppressionGain_ += 0.12f * (targetSuppression - suppressionGain_);
+
+        const float effectiveNoiseDb = dbFromLinear(noiseFloorRms_);
+        const bool likelySpeech =
+            !calibrating &&
+            (voiceProbability > 0.34f || (rmsDb - effectiveNoiseDb > 6.0f && rmsDb > -58.0f));
 
         float targetAgc = 1.0f;
-        if (!platformAgc_ && voiceProbability > 0.45f && rms > 0.002f) {
-            targetAgc = std::clamp(0.112f / rms, 0.82f, 2.10f);
+        if (!platformAgc_ && likelySpeech && rms > 0.0007f) {
+            targetAgc = std::clamp(0.100f / rms, 0.88f, 2.80f);
         }
-        agcGain_ += 0.055f * (targetAgc - agcGain_);
+        const float agcRate = targetAgc > agcGain_ ? 0.040f : 0.075f;
+        agcGain_ += agcRate * (targetAgc - agcGain_);
 
         const float finalGain = suppressionGain_ * agcGain_;
+        const float sampleGate = std::max(noiseFloorRms_ * 1.35f, 0.0012f);
         float processedPeak = 0.0f;
-        const float sampleGate = std::max(noiseFloorRms_ * 1.45f, 0.0015f);
 
         for (int32_t i = 0; i < frames; ++i) {
             const float x = static_cast<float>(samples[i]) / 32768.0f;
             float localGain = finalGain;
 
-            if (!platformNoiseSuppressor_ && voiceProbability < 0.48f && std::fabs(x) < sampleGate) {
-                localGain *= 0.58f;
+            if (!platformNoiseSuppressor_ && !likelySpeech && std::fabs(x) < sampleGate) {
+                localGain *= 0.62f;
             }
 
             float y = x * localGain;
@@ -122,9 +169,13 @@ public:
 private:
     float previousInput_ = 0.0f;
     float previousOutput_ = 0.0f;
-    float noiseFloorRms_ = 0.0040f;
+    float noiseFloorRms_ = 0.0010f;
+    float calibrationMinRms_ = 1.0f;
+    int64_t calibrationSamples_ = 0;
     float suppressionGain_ = 1.0f;
     float agcGain_ = 1.0f;
+    float voiceProbabilitySmoothed_ = 0.0f;
+    int32_t voiceHangoverFrames_ = 0;
     bool platformNoiseSuppressor_ = false;
     bool platformAgc_ = false;
 };
@@ -152,8 +203,6 @@ public:
         AAudioStreamBuilder_setChannelCount(builder, kRequestedChannelCount);
         AAudioStreamBuilder_setSampleRate(builder, kRequestedSampleRate);
         AAudioStreamBuilder_setFramesPerDataCallback(builder, kFramesPerCallback);
-        // Voice recognition is intentionally chosen for the software-DSP path. It avoids
-        // communication-route preprocessing that returned all-zero frames on the test A06.
         AAudioStreamBuilder_setInputPreset(builder, AAUDIO_INPUT_PRESET_VOICE_RECOGNITION);
         AAudioStreamBuilder_setDataCallback(builder, dataCallback, this);
         AAudioStreamBuilder_setErrorCallback(builder, errorCallback, this);
