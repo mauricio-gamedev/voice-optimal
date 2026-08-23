@@ -29,7 +29,7 @@ class GameMicService : Service() {
 
         private const val CHANNEL_ID = "clearmic_active"
         private const val NOTIFICATION_ID = 1001
-        private const val DIAGNOSTICS_INTERVAL_MS = 2_000L
+        private const val DIAGNOSTICS_INTERVAL_MS = 5_000L
     }
 
     private lateinit var engine: AudioEngine
