@@ -32,6 +32,7 @@ public final class ShizukuAudioUserService extends IShizukuAudioService.Stub {
     private final Map<Integer, SessionNoiseEffectInstaller.Handle> effects = new HashMap<>();
     private final Map<Integer, Integer> attempts = new HashMap<>();
     private final Set<String> verifiedHistory = new HashSet<>();
+    private final Set<String> advancedHistory = new HashSet<>();
     private final Set<String> failedHistory = new HashSet<>();
     private final SourceDefaultNsController sourceDefaults = new SourceDefaultNsController();
 
@@ -45,6 +46,7 @@ public final class ShizukuAudioUserService extends IShizukuAudioService.Stub {
     private volatile String lastExternal = "LAST_EXTERNAL: none seen since enable";
     private volatile String lastSnapshot = "recordings=0";
     private volatile int protectedSessions;
+    private volatile int advancedSessions;
     private volatile int failedSessions;
     private volatile String lastProtectedPackage = "—";
     private volatile String lastVerifiedChain = "—";
@@ -56,7 +58,7 @@ public final class ShizukuAudioUserService extends IShizukuAudioService.Stub {
 
     @Override
     public String getIdentity() {
-        return "uid=" + Os.getuid() + ";pid=" + Process.myPid() + ";alpha17";
+        return "uid=" + Os.getuid() + ";pid=" + Process.myPid() + ";alpha18";
     }
 
     @Override
@@ -193,21 +195,27 @@ public final class ShizukuAudioUserService extends IShizukuAudioService.Stub {
             boolean inheritedNs = hasEffect(target.effects, "noise suppress", "noise_suppress", "ns");
             boolean inheritedAec = hasEffect(target.effects, "acoustic echo", "acoustic_echo", "aec");
             boolean inheritedAgc = hasEffect(target.effects, "automatic gain", "automatic_gain", "agc");
+            String verifiedVendor = sourceDefaults.verifiedVendorEffects(target.effects);
 
             StringBuilder verified = new StringBuilder();
             if (inheritedNs) verified.append("NS");
             if (inheritedAec) appendEffect(verified, "AEC");
             if (inheritedAgc) appendEffect(verified, "AGC");
+            if (!verifiedVendor.isEmpty()) appendEffect(verified, "VENDOR");
 
             String targetLabel = target.label()
                     + (target.effects.isEmpty() ? "" : " effects=" + target.effects)
                     + (inheritedNs ? " DEFAULT_NS=IN_CHAIN" : "")
+                    + (!verifiedVendor.isEmpty() ? " VENDOR=" + verifiedVendor : "")
                     + (verified.length() > 0 ? " VERIFIED=" + verified : " VERIFIED=none");
             active.add(targetLabel);
 
             String sessionKey = sessionKey(target);
             if (inheritedNs) {
                 if (verifiedHistory.add(sessionKey)) protectedSessions++;
+                if ((inheritedAec || inheritedAgc || !verifiedVendor.isEmpty()) && advancedHistory.add(sessionKey)) {
+                    advancedSessions++;
+                }
                 if (failedHistory.remove(sessionKey) && failedSessions > 0) failedSessions--;
                 lastProtectedPackage = target.packageName.isEmpty() ? "uid:" + target.uid : target.packageName;
                 lastVerifiedChain = verified.length() == 0 ? "NS" : verified.toString();
@@ -259,9 +267,11 @@ public final class ShizukuAudioUserService extends IShizukuAudioService.Stub {
     private void resetSessionHealth() {
         synchronized (lock) {
             verifiedHistory.clear();
+            advancedHistory.clear();
             failedHistory.clear();
         }
         protectedSessions = 0;
+        advancedSessions = 0;
         failedSessions = 0;
         lastProtectedPackage = "—";
         lastVerifiedChain = "—";
@@ -276,6 +286,7 @@ public final class ShizukuAudioUserService extends IShizukuAudioService.Stub {
         return "PROTECTION: " + state
                 + " • protected=" + protectedSessions
                 + " • failed=" + failedSessions
+                + " • advanced=" + advancedSessions
                 + " • last=" + lastProtectedPackage
                 + " • chain=" + lastVerifiedChain;
     }
