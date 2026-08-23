@@ -91,9 +91,7 @@ class MainActivity : ComponentActivity() {
         val permissionLauncher = rememberLauncherForActivityResult(
             ActivityResultContracts.RequestMultiplePermissions()
         ) { result ->
-            if (result[Manifest.permission.RECORD_AUDIO] == true) {
-                startEngine()
-            }
+            if (result[Manifest.permission.RECORD_AUDIO] == true) startEngine()
         }
 
         fun requestAndStart() {
@@ -115,7 +113,7 @@ class MainActivity : ComponentActivity() {
             ) {
                 Text("ClearMic", style = MaterialTheme.typography.headlineLarge)
                 Text(
-                    "Milestone 3 • capture hotfix • ${BuildConfig.VERSION_NAME}",
+                    "Milestone 3 • speech safeguard • ${BuildConfig.VERSION_NAME}",
                     style = MaterialTheme.typography.labelLarge,
                     color = MaterialTheme.colorScheme.primary,
                 )
@@ -128,10 +126,7 @@ class MainActivity : ComponentActivity() {
                         Text("DSP: ${stats.dspBackend}")
 
                         stats.fallbackReason?.let { reason ->
-                            Text(
-                                "Proteção automática: $reason",
-                                color = MaterialTheme.colorScheme.primary,
-                            )
+                            Text("Proteção automática: $reason", color = MaterialTheme.colorScheme.primary)
                         }
 
                         Text("Nível: %.1f dBFS".format(stats.rmsDb))
@@ -146,7 +141,7 @@ class MainActivity : ComponentActivity() {
 
                         if (stats.capturedFrames > 48_000L && stats.rmsDb <= -119.5f) {
                             Text(
-                                "Diagnóstico: este backend também está recebendo frames silenciosos. A rota/fonte do microfone ainda precisa ser isolada.",
+                                "Diagnóstico: este backend está recebendo frames silenciosos. A rota/fonte do microfone precisa ser isolada.",
                                 color = MaterialTheme.colorScheme.error,
                             )
                         }
@@ -155,7 +150,7 @@ class MainActivity : ComponentActivity() {
                         Text("Echo Canceler Android: ${if (stats.echoCancelerEnabled) "ON" else "OFF"}")
                         Text("AGC Android: ${if (stats.automaticGainEnabled) "ON" else "OFF"}")
                         Text(
-                            "Hotfix alpha04 usa captura neutra sem pré-processamento vendor para eliminar incompatibilidades do firmware durante o diagnóstico.",
+                            "Alpha06 preserva fala fraca/incerta antes de aplicar gate. A supressão só fica agressiva quando o frame realmente se comporta como ruído.",
                             style = MaterialTheme.typography.bodySmall,
                         )
                     }
@@ -169,9 +164,7 @@ class MainActivity : ComponentActivity() {
                         Text("Uptime do serviço: ${background.serviceUptimeMs / 1000}s")
                         Text("Memória PSS: %.1f MB".format(background.memoryPssMb))
                         Text("CPU do processo: %.1f%%".format(background.cpuPercent))
-                        Text(
-                            "Otimização de bateria: ${if (background.batteryOptimizationActive) "ATIVA" else "IGNORADA"}"
-                        )
+                        Text("Otimização de bateria: ${if (background.batteryOptimizationActive) "ATIVA" else "IGNORADA"}")
                         Text("Último evento: ${background.lastEvent}")
 
                         OutlinedButton(onClick = onOpenBatterySettings) {
@@ -184,21 +177,17 @@ class MainActivity : ComponentActivity() {
                     Button(
                         enabled = state == EngineState.IDLE || state == EngineState.ERROR,
                         onClick = { requestAndStart() },
-                    ) {
-                        Text("Ativar motor")
-                    }
+                    ) { Text("Ativar motor") }
 
                     Button(
                         enabled = state == EngineState.RUNNING || state == EngineState.ERROR,
                         onClick = onStop,
-                    ) {
-                        Text("Desativar")
-                    }
+                    ) { Text("Desativar") }
                 }
 
                 Spacer(Modifier.height(4.dp))
                 Text(
-                    "O alpha04 prioriza estabilidade: tenta AAudio com fonte neutra e, se detectar dois segundos de frames zerados, migra automaticamente para AudioRecord seguro. A Camada 3 pesada continua pausada até CPU e captura ficarem estáveis.",
+                    "A rota AAudio que funcionou no alpha04/05 foi preservada. O alpha06 corrige apenas VAD, noise floor e proteção da fala; WebRTC/RNNoise continuam pausados até esta base ficar confiável.",
                     style = MaterialTheme.typography.bodyMedium,
                 )
             }
