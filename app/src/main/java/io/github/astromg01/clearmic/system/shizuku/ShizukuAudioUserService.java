@@ -14,6 +14,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.FutureTask;
@@ -29,12 +30,14 @@ public final class ShizukuAudioUserService extends IShizukuAudioService.Stub {
     private final Object lock = new Object();
     private final Map<Integer, SessionNoiseEffectInstaller.Handle> effects = new HashMap<>();
     private final Map<Integer, Integer> attempts = new HashMap<>();
+    private final SourceDefaultNsController sourceDefaults = new SourceDefaultNsController();
 
     private volatile boolean enabled;
     private volatile Thread monitorThread;
     private volatile String status = "DISABLED";
     private volatile String monitor = "MONITOR: not started";
     private volatile String inventory = "NS_IMPLS: not scanned";
+    private volatile String sourceDefaultStatus = "SOURCE_DEFAULT: disabled";
     private volatile String lastExternal = "LAST_EXTERNAL: none seen since enable";
     private volatile String lastSnapshot = "recordings=0";
 
@@ -45,7 +48,7 @@ public final class ShizukuAudioUserService extends IShizukuAudioService.Stub {
 
     @Override
     public String getIdentity() {
-        return "uid=" + Os.getuid() + ";pid=" + Process.myPid() + ";alpha14";
+        return "uid=" + Os.getuid() + ";pid=" + Process.myPid() + ";alpha15";
     }
 
     @Override
@@ -88,20 +91,28 @@ public final class ShizukuAudioUserService extends IShizukuAudioService.Stub {
             inventory = SessionNoiseEffectInstaller.inventory();
             lastExternal = "LAST_EXTERNAL: none seen since enable";
             monitor = "MONITOR: starting IAudioService Binder";
+
+            // Important: register transient defaults BEFORE the game creates its AudioRecord.
+            // On Samsung, post-hoc AudioEffect(sessionId) returned ERROR_NO_INIT (-3).
+            sourceDefaultStatus = sourceDefaults.enable();
+
             enabled = true;
             startMonitor();
-            status = "ENABLED • waiting for an eligible game/voice recording session";
+            status = "ENABLED • source-default NS registered; waiting for game/voice recording session";
         } else {
             enabled = false;
+            sourceDefaults.release();
+            sourceDefaultStatus = sourceDefaults.status();
             releaseAll();
-            status = "DISABLED • all ClearMic-owned session effects released";
+            status = "DISABLED • source-default and session effects released";
         }
         return status;
     }
 
     @Override
     public String getGameBridgeStatus() {
-        return status + "\n" + monitor + "\n" + inventory + "\n" + lastExternal + "\n" + lastSnapshot;
+        return status + "\n" + monitor + "\n" + sourceDefaultStatus + "\n" + inventory
+                + "\n" + lastExternal + "\n" + lastSnapshot;
     }
 
     private void startMonitor() {
@@ -148,17 +159,25 @@ public final class ShizukuAudioUserService extends IShizukuAudioService.Stub {
             }
 
             eligible.add(target.session);
-            active.add(target.label());
+            boolean inheritedNs = hasNoiseSuppressor(target.effects);
+            String targetLabel = target.label()
+                    + (target.effects.isEmpty() ? "" : " effects=" + target.effects)
+                    + (inheritedNs ? " DEFAULT_NS=IN_CHAIN" : "");
+            active.add(targetLabel);
 
-            synchronized (lock) {
-                SessionNoiseEffectInstaller.Handle current = effects.get(target.session);
-                int count = attempts.containsKey(target.session) ? attempts.get(target.session) : 0;
-                if ((current == null || !current.hasWorkingNs()) && count < 4) {
-                    if (current != null) current.release();
-                    SessionNoiseEffectInstaller.Handle next =
-                            SessionNoiseEffectInstaller.install(target.session, target.source);
-                    effects.put(target.session, next);
-                    attempts.put(target.session, count + 1);
+            // If AudioPolicy already attached NS from SourceDefaultEffect, do not create a
+            // second engine. Otherwise retain alpha14's post-hoc route only as a fallback probe.
+            if (!inheritedNs) {
+                synchronized (lock) {
+                    SessionNoiseEffectInstaller.Handle current = effects.get(target.session);
+                    int count = attempts.containsKey(target.session) ? attempts.get(target.session) : 0;
+                    if ((current == null || !current.hasWorkingNs()) && count < 4) {
+                        if (current != null) current.release();
+                        SessionNoiseEffectInstaller.Handle next =
+                                SessionNoiseEffectInstaller.install(target.session, target.source);
+                        effects.put(target.session, next);
+                        attempts.put(target.session, count + 1);
+                    }
                 }
             }
         }
@@ -197,6 +216,13 @@ public final class ShizukuAudioUserService extends IShizukuAudioService.Stub {
                 || source == MediaRecorder.AudioSource.VOICE_COMMUNICATION
                 || source == MediaRecorder.AudioSource.UNPROCESSED
                 || source == MediaRecorder.AudioSource.VOICE_PERFORMANCE;
+    }
+
+    private static boolean hasNoiseSuppressor(String effectsText) {
+        if (effectsText == null || effectsText.isEmpty()) return false;
+        String value = effectsText.toLowerCase(Locale.ROOT);
+        return value.contains("noise suppress") || value.contains("noise_suppress") || value.equals("ns")
+                || value.contains(",ns") || value.contains("ns,");
     }
 
     private String effectSummary() {
@@ -282,7 +308,7 @@ public final class ShizukuAudioUserService extends IShizukuAudioService.Stub {
         Throwable current = error;
         while (current.getCause() != null && current.getCause() != current) current = current.getCause();
         String message = current.getMessage() == null ? "" : current.getMessage().replace('\n', ' ').trim();
-        if (message.length() > 100) message = message.substring(0, 100);
+        if (message.length() > 120) message = message.substring(0, 120);
         return current.getClass().getSimpleName() + (message.isEmpty() ? "" : ":" + message);
     }
 }
