@@ -42,9 +42,9 @@ class ShizukuAudioBridgeV17(context: Context) {
             ComponentName(appContext.packageName, ShizukuAudioUserService::class.java.name)
         )
             .daemon(true)
-            .tag("clearmic-audio-bridge-v17")
+            .tag("clearmic-audio-bridge")
             .version(USER_SERVICE_VERSION)
-            .processNameSuffix("clearmic_shizuku_audio_v17")
+            .processNameSuffix("clearmic_shizuku_audio")
     }
 
     private val binderReceivedListener = Shizuku.OnBinderReceivedListener {
