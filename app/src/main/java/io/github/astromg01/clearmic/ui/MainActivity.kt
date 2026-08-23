@@ -54,6 +54,21 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    override fun onResume() {
+        super.onResume()
+        requestForegroundRecovery()
+    }
+
+    private fun requestForegroundRecovery() {
+        if (AudioRuntime.state.value != EngineState.RUNNING) return
+        runCatching {
+            startService(
+                Intent(this, GameMicService::class.java)
+                    .setAction(GameMicService.ACTION_CLIENT_VISIBLE)
+            )
+        }
+    }
+
     private fun startEngine() {
         val intent = Intent(this, GameMicService::class.java).setAction(GameMicService.ACTION_START)
         ContextCompat.startForegroundService(this, intent)
@@ -113,7 +128,7 @@ class MainActivity : ComponentActivity() {
             ) {
                 Text("ClearMic", style = MaterialTheme.typography.headlineLarge)
                 Text(
-                    "Milestone 3 • speech safeguard • ${BuildConfig.VERSION_NAME}",
+                    "Milestone 3 • lifecycle recovery • ${BuildConfig.VERSION_NAME}",
                     style = MaterialTheme.typography.labelLarge,
                     color = MaterialTheme.colorScheme.primary,
                 )
@@ -124,6 +139,8 @@ class MainActivity : ComponentActivity() {
                         Text("Estado: ${state.name}")
                         Text("Backend: ${stats.engineBackend}")
                         Text("DSP: ${stats.dspBackend}")
+                        Text("Saúde da captura: ${stats.captureHealth}")
+                        Text("Recuperações da captura: ${stats.captureRecoveryCount}")
 
                         stats.fallbackReason?.let { reason ->
                             Text("Proteção automática: $reason", color = MaterialTheme.colorScheme.primary)
@@ -139,9 +156,16 @@ class MainActivity : ComponentActivity() {
                         Text("Frames capturados: ${stats.capturedFrames}")
                         Text("XRuns: ${stats.xrunCount}")
 
-                        if (stats.capturedFrames > 48_000L && stats.rmsDb <= -119.5f) {
+                        if (stats.captureHealth == "SILENCED_BY_SYSTEM") {
                             Text(
-                                "Diagnóstico: este backend está recebendo frames silenciosos. A rota/fonte do microfone precisa ser isolada.",
+                                "O Android está entregando silêncio temporariamente, normalmente porque outro app ganhou prioridade do microfone. O ClearMic aguarda a rota voltar.",
+                                color = MaterialTheme.colorScheme.primary,
+                            )
+                        }
+
+                        if (stats.captureHealth == "STALLED" || stats.captureHealth == "RECOVERING") {
+                            Text(
+                                "A sessão de entrada congelou e está sendo reconstruída automaticamente.",
                                 color = MaterialTheme.colorScheme.error,
                             )
                         }
@@ -150,7 +174,7 @@ class MainActivity : ComponentActivity() {
                         Text("Echo Canceler Android: ${if (stats.echoCancelerEnabled) "ON" else "OFF"}")
                         Text("AGC Android: ${if (stats.automaticGainEnabled) "ON" else "OFF"}")
                         Text(
-                            "Alpha06 preserva fala fraca/incerta antes de aplicar gate. A supressão só fica agressiva quando o frame realmente se comporta como ruído.",
+                            "Alpha07 diferencia stream congelado de silêncio imposto pelo Android. Ao voltar para o ClearMic, uma sessão presa é recuperada automaticamente.",
                             style = MaterialTheme.typography.bodySmall,
                         )
                     }
@@ -187,7 +211,7 @@ class MainActivity : ComponentActivity() {
 
                 Spacer(Modifier.height(4.dp))
                 Text(
-                    "A rota AAudio que funcionou no alpha04/05 foi preservada. O alpha06 corrige apenas VAD, noise floor e proteção da fala; WebRTC/RNNoise continuam pausados até esta base ficar confiável.",
+                    "A rota AAudio e o Native Adaptive V3 foram preservados. Este hotfix mexe apenas na recuperação da sessão ao alternar entre apps; WebRTC/RNNoise continuam pausados até a captura em segundo plano ficar confiável.",
                     style = MaterialTheme.typography.bodyMedium,
                 )
             }
