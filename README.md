@@ -4,18 +4,23 @@ ClearMic is an experimental Android microphone noise-reduction and voice optimiz
 
 ## Current milestone
 
-**Milestone 1 — local audio engine**
+**Milestone 2 — background survival and update identity**
 
-The current build validates the foundations before any system-wide microphone routing is introduced:
+The current build keeps the Milestone 1 local audio engine and adds controlled background resilience:
 
 - Android Foreground Service for microphone work
 - `AudioRecord` at 48 kHz, mono, 10 ms processing frames
 - Android `NoiseSuppressor`, `AcousticEchoCanceler`, and `AutomaticGainControl` when available
 - low-allocation real-time capture loop
 - lightweight DC blocker and soft noise gate placeholder
-- live RMS/peak statistics in Jetpack Compose
-- service notification with a stop action
-- GitHub Actions debug APK build
+- persistent user intent for background execution
+- `START_STICKY` recovery when Android recreates the service
+- restart counter, service uptime, CPU and PSS memory diagnostics
+- battery-optimization status and direct settings shortcut
+- protection against duplicate engine starts
+- permanent dark UI theme
+- permanent release update-signing identity prepared outside the public repository
+- GitHub Actions debug APK build and optional signed release build
 
 > Important: this milestone processes ClearMic's own capture session. It does **not** yet inject processed audio into another game's microphone session. Android intentionally isolates microphone capture sessions, so the future system-wide bridge is a separate advanced layer.
 
@@ -24,14 +29,14 @@ The current build validates the foundations before any system-wide microphone ro
 ```text
 App / Compose UI
       |
-GameMicController
-      |
-GameMicService (foreground)
+GameMicService (foreground + sticky recovery)
+      |-- BackgroundSurvivalManager
+      |-- BackgroundRuntime (CPU / RAM / restarts / battery status)
       |
 AudioEngine
       |-- AndroidPreProcessing (NS / AEC / AGC)
       |-- AudioProcessor
-      |     `-- LightweightVoiceProcessor`
+      |     `-- LightweightVoiceProcessor
       |
 AudioRuntime (state + meters)
 
@@ -51,25 +56,28 @@ Future layers:
 - targetSdk 36
 - minSdk 28
 - Kotlin / Compose Compiler plugin 2.3.21
-- Compose BOM 2025.08.00 (Compose 1.9 generation)
-- AndroidX Core 1.16.0
-- Activity 1.11.0
-- Lifecycle 2.9.1
+- Compose BOM 2025.08.00
+
+## Signing
+
+Release updates must keep the same permanent certificate. Private key material is intentionally excluded from Git. See [`SIGNING.md`](SIGNING.md) for the public certificate fingerprint and GitHub Actions secret names.
 
 ## Build on GitHub
 
-Every push to `main` or `master` runs the Android build workflow. If successful, download the `ClearMic-debug` artifact from the Actions run.
+Every push to `main` or `master` runs the Android build workflow. Pull requests also validate the debug APK. If release-signing secrets are configured, CI additionally produces `ClearMic-signed-release`.
 
-## Test order
+## Milestone 2 test order
 
 1. Install the debug APK.
-2. Grant microphone access.
+2. Grant microphone access and notifications.
 3. Tap **Ativar motor** while the app is visible.
 4. Confirm the persistent ClearMic notification appears.
 5. Speak and verify the dBFS/peak meter moves.
 6. Check which device effects report `ON`.
-7. Put ClearMic in the background and keep it running for a longer session.
-8. Stop it using the app or notification action.
+7. Put ClearMic in the background for a longer session.
+8. Reopen it and inspect service uptime, CPU, PSS memory and restart count.
+9. Open **Ajustar bateria** and, when desired for testing, exempt ClearMic from battery optimization.
+10. Stop it using the app or notification action and confirm it remains stopped.
 
 ## Project rule
 
