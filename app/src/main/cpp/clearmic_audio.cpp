@@ -39,6 +39,8 @@ public:
         noiseFloorRms_ = 0.0040f;
         suppressionGain_ = 1.0f;
         agcGain_ = 1.0f;
+        platformNoiseSuppressor_ = false;
+        platformAgc_ = false;
     }
 
     void configurePlatformEffects(bool noiseSuppressorEnabled, bool agcEnabled) {
@@ -53,7 +55,6 @@ public:
         double sumSquares = 0.0;
         float peak = 0.0f;
 
-        // Pass 1: DC/high-pass cleanup. This is deliberately tiny and allocation-free.
         for (int32_t i = 0; i < frames; ++i) {
             const float x = static_cast<float>(samples[i]) / 32768.0f;
             const float y = x - previousInput_ + 0.995f * previousOutput_;
@@ -75,8 +76,6 @@ public:
         const float levelVoice = smoothStep(-58.0f, -30.0f, rmsDb);
         const float voiceProbability = std::clamp(0.68f * snrVoice + 0.32f * levelVoice, 0.0f, 1.0f);
 
-        // Learn the room floor mostly while speech is absent. The very slow speech path
-        // prevents the estimator from becoming permanently stale after route changes.
         const float noiseLearn = voiceProbability < 0.35f ? 0.035f : 0.0015f;
         noiseFloorRms_ = std::clamp(
             noiseFloorRms_ + noiseLearn * (rms - noiseFloorRms_),
@@ -84,7 +83,6 @@ public:
             0.12f
         );
 
-        // If the vendor NS is already active, stay conservative to avoid robotic voice.
         const float suppressionFloor = platformNoiseSuppressor_ ? 0.72f : 0.34f;
         const float targetSuppression = suppressionFloor +
             (1.0f - suppressionFloor) * smoothStep(0.20f, 0.72f, voiceProbability);
@@ -92,18 +90,16 @@ public:
 
         float targetAgc = 1.0f;
         if (!platformAgc_ && voiceProbability > 0.45f && rms > 0.002f) {
-            // Gentle voice leveling: target about -19 dBFS, with conservative headroom.
             targetAgc = std::clamp(0.112f / rms, 0.82f, 2.10f);
         }
         agcGain_ += 0.055f * (targetAgc - agcGain_);
 
         const float finalGain = suppressionGain_ * agcGain_;
         float processedPeak = 0.0f;
-
-        // Pass 2: adaptive expander/leveling + hard safety limiter.
         const float sampleGate = std::max(noiseFloorRms_ * 1.45f, 0.0015f);
+
         for (int32_t i = 0; i < frames; ++i) {
-            float x = static_cast<float>(samples[i]) / 32768.0f;
+            const float x = static_cast<float>(samples[i]) / 32768.0f;
             float localGain = finalGain;
 
             if (!platformNoiseSuppressor_ && voiceProbability < 0.48f && std::fabs(x) < sampleGate) {
@@ -156,8 +152,9 @@ public:
         AAudioStreamBuilder_setChannelCount(builder, kRequestedChannelCount);
         AAudioStreamBuilder_setSampleRate(builder, kRequestedSampleRate);
         AAudioStreamBuilder_setFramesPerDataCallback(builder, kFramesPerCallback);
-        AAudioStreamBuilder_setInputPreset(builder, AAUDIO_INPUT_PRESET_VOICE_COMMUNICATION);
-        AAudioStreamBuilder_setSessionId(builder, AAUDIO_SESSION_ID_ALLOCATE);
+        // Voice recognition is intentionally chosen for the software-DSP path. It avoids
+        // communication-route preprocessing that returned all-zero frames on the test A06.
+        AAudioStreamBuilder_setInputPreset(builder, AAUDIO_INPUT_PRESET_VOICE_RECOGNITION);
         AAudioStreamBuilder_setDataCallback(builder, dataCallback, this);
         AAudioStreamBuilder_setErrorCallback(builder, errorCallback, this);
 
@@ -283,13 +280,16 @@ Java_io_github_astromg01_clearmic_audio_NativeAudioBridge_nativeStart(JNIEnv*, j
     return static_cast<jint>(gEngine.start());
 }
 
-extern "C" JNIEXPORT jfloatArray JNICALL
-Java_io_github_astromg01_clearmic_audio_NativeAudioBridge_nativeGetStats(JNIEnv* env, jobject) {
+extern "C" JNIEXPORT void JNICALL
+Java_io_github_astromg01_clearmic_audio_NativeAudioBridge_nativeFillStats(
+    JNIEnv* env,
+    jobject,
+    jfloatArray output
+) {
+    if (output == nullptr || env->GetArrayLength(output) < 5) return;
     float values[5] = {-120.0f, 0.0f, 0.0f, -120.0f, 0.0f};
     gEngine.getStats(values);
-    jfloatArray output = env->NewFloatArray(5);
-    if (output != nullptr) env->SetFloatArrayRegion(output, 0, 5, values);
-    return output;
+    env->SetFloatArrayRegion(output, 0, 5, values);
 }
 
 extern "C" JNIEXPORT jlong JNICALL
