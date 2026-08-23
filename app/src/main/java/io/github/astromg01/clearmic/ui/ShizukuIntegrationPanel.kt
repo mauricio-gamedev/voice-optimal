@@ -20,6 +20,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import io.github.astromg01.clearmic.service.GameMicService
 import io.github.astromg01.clearmic.system.shizuku.GameBridgeVerdict
 import io.github.astromg01.clearmic.system.shizuku.ShizukuAudioBridge
 import io.github.astromg01.clearmic.system.shizuku.ShizukuAudioRuntime
@@ -115,6 +116,7 @@ internal fun ShizukuIntegrationPanel(
                         Button(
                             enabled = report.modifyAudioRoutingGranted || report.modifyDefaultAudioEffectsGranted,
                             onClick = {
+                                stopLocalEngine(appContext)
                                 onBeforeEnableGameBridge()
                                 bridge.setGameBridgeEnabled(true)
                             },
@@ -167,6 +169,15 @@ internal fun ShizukuIntegrationPanel(
                 style = MaterialTheme.typography.bodySmall,
             )
         }
+    }
+}
+
+private fun stopLocalEngine(context: Context) {
+    runCatching {
+        context.startService(
+            Intent(context, GameMicService::class.java)
+                .setAction(GameMicService.ACTION_STOP)
+        )
     }
 }
 
