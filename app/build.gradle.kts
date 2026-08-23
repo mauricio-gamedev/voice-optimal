@@ -18,8 +18,8 @@ android {
         applicationId = "io.github.astromg01.clearmic"
         minSdk = 28
         targetSdk = 36
-        versionCode = 8
-        versionName = "0.4.0-alpha08"
+        versionCode = 9
+        versionName = "0.4.1-alpha09"
         ndk { abiFilters += listOf("arm64-v8a") }
     }
 
@@ -33,6 +33,7 @@ android {
     buildFeatures {
         compose = true
         buildConfig = true
+        aidl = true
     }
 
     compileOptions {
@@ -73,5 +74,10 @@ dependencies {
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.ui:ui-tooling-preview")
     implementation("androidx.compose.material3:material3")
+
+    val shizukuVersion = "13.1.5"
+    implementation("dev.rikka.shizuku:api:$shizukuVersion")
+    implementation("dev.rikka.shizuku:provider:$shizukuVersion")
+
     debugImplementation("androidx.compose.ui:ui-tooling")
 }

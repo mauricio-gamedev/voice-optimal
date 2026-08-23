@@ -160,7 +160,7 @@ class MainActivity : ComponentActivity() {
             ) {
                 Text("ClearMic", style = MaterialTheme.typography.headlineLarge)
                 Text(
-                    "Milestone 4 • system bridge scanner • ${BuildConfig.VERSION_NAME}",
+                    "Milestone 4.1 • Shizuku game bridge • ${BuildConfig.VERSION_NAME}",
                     style = MaterialTheme.typography.labelLarge,
                     color = MaterialTheme.colorScheme.primary,
                 )
@@ -210,9 +210,9 @@ class MainActivity : ComponentActivity() {
 
                 Card(modifier = Modifier.fillMaxWidth()) {
                     Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Text("Milestone 4 — Integração com jogos", style = MaterialTheme.typography.titleMedium)
+                        Text("Milestone 4 — Scanner do sistema", style = MaterialTheme.typography.titleMedium)
                         Text(
-                            "Scanner passivo do sistema. Esta etapa só lê capacidades e não modifica o áudio do Android.",
+                            "Scanner passivo. Ele continua disponível como fallback mesmo sem Shizuku.",
                             style = MaterialTheme.typography.bodySmall,
                         )
 
@@ -237,7 +237,7 @@ class MainActivity : ComponentActivity() {
                                     "AEC ${onOff(report.nativeEchoCancelerAvailable)} • " +
                                     "AGC ${onOff(report.nativeAgcAvailable)}"
                             )
-                            Text("Rota candidata: ${bridgeReadinessLabel(report.bridgeReadiness)}")
+                            Text("Rota passiva: ${bridgeReadinessLabel(report.bridgeReadiness)}")
 
                             report.audioEffectConfigs.take(4).forEach { config ->
                                 Text(
@@ -246,22 +246,18 @@ class MainActivity : ComponentActivity() {
                                     style = MaterialTheme.typography.bodySmall,
                                 )
                             }
-
-                            Text(
-                                report.recommendation,
-                                color = MaterialTheme.colorScheme.primary,
-                                style = MaterialTheme.typography.bodyMedium,
-                            )
                         }
 
                         OutlinedButton(
                             enabled = !systemScanRunning,
                             onClick = { runSystemScan() },
                         ) {
-                            Text(if (systemScanRunning) "Escaneando…" else "Escanear novamente")
+                            Text(if (systemScanRunning) "Escaneando…" else "Escanear sistema")
                         }
                     }
                 }
+
+                ShizukuIntegrationPanel()
 
                 Card(modifier = Modifier.fillMaxWidth()) {
                     Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -294,7 +290,7 @@ class MainActivity : ComponentActivity() {
 
                 Spacer(Modifier.height(4.dp))
                 Text(
-                    "A captura AAudio e o Native Adaptive V3 continuam intactos. A Milestone 4 começa somente com diagnóstico read-only; qualquer bridge privilegiado terá validação e rollback antes de alterar a cadeia de áudio.",
+                    "O alpha09 conclui o diagnóstico da Milestone 4 em uma única versão: scanner passivo + Shizuku + UserService shell/root + permissões críticas + AudioService/Flinger/Policy. O áudio do sistema continua intocado até termos um veredito objetivo de bridge.",
                     style = MaterialTheme.typography.bodyMedium,
                 )
             }
