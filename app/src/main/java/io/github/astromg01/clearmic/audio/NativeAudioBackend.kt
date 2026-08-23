@@ -6,7 +6,7 @@ internal class NativeAudioBackend : AudioBackend {
     private var opened = false
 
     override val engineName: String = "AAudio C++"
-    override val dspName: String = "Native Adaptive V2"
+    override val dspName: String = "Native Adaptive V3"
     override val allowPlatformPreprocessing: Boolean = false
 
     override fun open(): Int {
