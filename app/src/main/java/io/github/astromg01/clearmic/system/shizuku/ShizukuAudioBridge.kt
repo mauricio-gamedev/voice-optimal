@@ -76,7 +76,7 @@ object ShizukuAudioRuntime {
 class ShizukuAudioBridge(context: Context) {
     companion object {
         private const val PERMISSION_REQUEST_CODE = 4109
-        private const val USER_SERVICE_VERSION = 4
+        private const val USER_SERVICE_VERSION = 5
         private const val MAX_HINT_LINES = 8
     }
 
@@ -365,9 +365,9 @@ class ShizukuAudioBridge(context: Context) {
 
                 val recommendation = when (verdict) {
                     GameBridgeVerdict.ROOT_SYSTEM_BRIDGE_READY ->
-                        "Shizuku está em modo ROOT. O monitor Binder de sessões está disponível."
+                        "Shizuku está em modo ROOT. O monitor Binder e o effect-session probe alpha14 estão disponíveis."
                     GameBridgeVerdict.ROUTING_PERMISSION_CANDIDATE ->
-                        "Alpha13 usa IAudioService Binder diretamente para observar sessões externas e evitar a limitação de Context do UserService."
+                        "Alpha14 monitora IAudioService e tenta NS por wrapper, tipo genérico e UUID concreto do efeito Samsung."
                     GameBridgeVerdict.DIAGNOSTICS_ONLY ->
                         "Shizuku funciona para diagnóstico, mas não recebeu permissão suficiente para controlar sessões de captura."
                     GameBridgeVerdict.SHIZUKU_NOT_READY -> "Inicie e autorize o Shizuku."
