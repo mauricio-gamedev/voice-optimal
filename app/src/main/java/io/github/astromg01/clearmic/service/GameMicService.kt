@@ -26,6 +26,7 @@ class GameMicService : Service() {
     companion object {
         const val ACTION_START = "io.github.astromg01.clearmic.action.START"
         const val ACTION_STOP = "io.github.astromg01.clearmic.action.STOP"
+        const val ACTION_CLIENT_VISIBLE = "io.github.astromg01.clearmic.action.CLIENT_VISIBLE"
 
         private const val CHANNEL_ID = "clearmic_active"
         private const val NOTIFICATION_ID = 1001
@@ -72,6 +73,16 @@ class GameMicService : Service() {
             ACTION_START -> {
                 survivalManager.markUserStarted()
                 startEngineSafely(recovered = false)
+            }
+
+            ACTION_CLIENT_VISIBLE -> {
+                if (survivalManager.desiredRunning && AudioRuntime.state.value == EngineState.RUNNING) {
+                    val recovered = runCatching { engine.onClientVisible() }.getOrDefault(false)
+                    if (recovered) {
+                        survivalManager.markEvent("Sessão de microfone recuperada após troca de app")
+                        publishDiagnostics()
+                    }
+                }
             }
 
             null -> {
