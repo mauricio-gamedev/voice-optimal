@@ -47,6 +47,7 @@ import io.github.astromg01.clearmic.service.GameMicService
 import io.github.astromg01.clearmic.system.BridgeReadiness
 import io.github.astromg01.clearmic.system.SystemCapabilityReport
 import io.github.astromg01.clearmic.system.SystemCapabilityScanner
+import io.github.astromg01.clearmic.system.shizuku.ShizukuAudioRuntime
 import io.github.astromg01.clearmic.ui.theme.ClearMicTheme
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -114,6 +115,7 @@ class MainActivity : ComponentActivity() {
         val state by AudioRuntime.state.collectAsState()
         val stats by AudioRuntime.stats.collectAsState()
         val background by BackgroundRuntime.stats.collectAsState()
+        val shizukuReport by ShizukuAudioRuntime.report.collectAsState()
         val context = LocalContext.current.applicationContext
         val systemScanner = remember(context) { SystemCapabilityScanner(context) }
         val scanScope = rememberCoroutineScope()
@@ -138,7 +140,7 @@ class MainActivity : ComponentActivity() {
         val permissionLauncher = rememberLauncherForActivityResult(
             ActivityResultContracts.RequestMultiplePermissions()
         ) { result ->
-            if (result[Manifest.permission.RECORD_AUDIO] == true) startEngine()
+            if (result[Manifest.permission.RECORD_AUDIO] == true && !shizukuReport.gameBridgeEnabled) startEngine()
         }
 
         fun requestAndStart() {
@@ -160,7 +162,7 @@ class MainActivity : ComponentActivity() {
             ) {
                 Text("ClearMic", style = MaterialTheme.typography.headlineLarge)
                 Text(
-                    "Milestone 4.1 • Shizuku game bridge • ${BuildConfig.VERSION_NAME}",
+                    "Milestone 4.2 • Game session bridge • ${BuildConfig.VERSION_NAME}",
                     style = MaterialTheme.typography.labelLarge,
                     color = MaterialTheme.colorScheme.primary,
                 )
@@ -173,6 +175,13 @@ class MainActivity : ComponentActivity() {
                         Text("DSP: ${stats.dspBackend}")
                         Text("Saúde da captura: ${stats.captureHealth}")
                         Text("Recuperações da captura: ${stats.captureRecoveryCount}")
+
+                        if (shizukuReport.gameBridgeEnabled) {
+                            Text(
+                                "Game Bridge ativo: a captura local deve permanecer desligada para o jogo ser o dono do microfone.",
+                                color = MaterialTheme.colorScheme.primary,
+                            )
+                        }
 
                         stats.fallbackReason?.let { reason ->
                             Text("Proteção automática: $reason", color = MaterialTheme.colorScheme.primary)
@@ -257,7 +266,7 @@ class MainActivity : ComponentActivity() {
                     }
                 }
 
-                ShizukuIntegrationPanel()
+                ShizukuIntegrationPanel(onBeforeEnableGameBridge = onStop)
 
                 Card(modifier = Modifier.fillMaxWidth()) {
                     Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -278,7 +287,7 @@ class MainActivity : ComponentActivity() {
 
                 Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     Button(
-                        enabled = state == EngineState.IDLE || state == EngineState.ERROR,
+                        enabled = (state == EngineState.IDLE || state == EngineState.ERROR) && !shizukuReport.gameBridgeEnabled,
                         onClick = { requestAndStart() },
                     ) { Text("Ativar motor") }
 
@@ -290,7 +299,7 @@ class MainActivity : ComponentActivity() {
 
                 Spacer(Modifier.height(4.dp))
                 Text(
-                    "O alpha09 conclui o diagnóstico da Milestone 4 em uma única versão: scanner passivo + Shizuku + UserService shell/root + permissões críticas + AudioService/Flinger/Policy. O áudio do sistema continua intocado até termos um veredito objetivo de bridge.",
+                    "O alpha12 corrige o handoff entre o motor local e o Game Bridge: o AAudio precisa parar de verdade antes de o daemon Shizuku assumir o monitoramento das sessões do jogo. Enquanto o Game Bridge estiver ativo, a captura local fica bloqueada para evitar disputa pelo microfone.",
                     style = MaterialTheme.typography.bodyMedium,
                 )
             }
