@@ -73,12 +73,10 @@ object ShizukuAudioRuntime {
     }
 }
 
-class ShizukuAudioBridge(
-    context: Context,
-) {
+class ShizukuAudioBridge(context: Context) {
     companion object {
         private const val PERMISSION_REQUEST_CODE = 4109
-        private const val USER_SERVICE_VERSION = 3
+        private const val USER_SERVICE_VERSION = 4
         private const val MAX_HINT_LINES = 8
     }
 
@@ -122,7 +120,7 @@ class ShizukuAudioBridge(
             ShizukuAudioRuntime.publish(
                 currentBaseReport().copy(
                     state = ShizukuBridgeState.PERMISSION_DENIED,
-                    recommendation = "Permissão do Shizuku negada. Autorize o ClearMic no Shizuku para continuar a integração com jogos.",
+                    recommendation = "Permissão do Shizuku negada. Autorize o ClearMic no Shizuku para continuar.",
                 )
             )
         }
@@ -140,7 +138,7 @@ class ShizukuAudioBridge(
                 currentBaseReport().copy(
                     state = if (isBinderAlive()) ShizukuBridgeState.CONNECTING else ShizukuBridgeState.NOT_RUNNING,
                     lastError = "UserService Shizuku desconectado",
-                    recommendation = "O bridge privilegiado desconectou. Use 'Escanear Shizuku' para reconectar.",
+                    recommendation = "Use Escanear Shizuku para reconectar.",
                 )
             )
         }
@@ -171,7 +169,7 @@ class ShizukuAudioBridge(
             ShizukuAudioRuntime.publish(
                 PrivilegedAudioReport(
                     state = ShizukuBridgeState.NOT_RUNNING,
-                    recommendation = "Shizuku não está rodando. Inicie-o por Depuração sem fio/ADB ou root e tente novamente.",
+                    recommendation = "Shizuku não está rodando. Inicie-o por Depuração sem fio/ADB ou root.",
                 )
             )
             return
@@ -191,14 +189,14 @@ class ShizukuAudioBridge(
             ShizukuAudioRuntime.publish(
                 currentBaseReport().copy(
                     state = ShizukuBridgeState.PERMISSION_DENIED,
-                    recommendation = "A permissão foi negada permanentemente. Abra o Shizuku e autorize o ClearMic manualmente.",
+                    recommendation = "A permissão foi negada permanentemente. Autorize o ClearMic manualmente no Shizuku.",
                 )
             )
             return
         }
 
         runCatching { Shizuku.requestPermission(PERMISSION_REQUEST_CODE) }
-            .onFailure { error -> publishError("Falha ao solicitar permissão Shizuku", error) }
+            .onFailure { publishError("Falha ao solicitar permissão Shizuku", it) }
     }
 
     fun refresh() {
@@ -230,7 +228,7 @@ class ShizukuAudioBridge(
                         lastError = if (status.startsWith("ERROR")) status else null,
                     )
                 )
-            }.onFailure { error -> publishError("Falha ao alterar Game Native Effects", error) }
+            }.onFailure { publishError("Falha ao alterar Game Native Effects", it) }
         }
     }
 
@@ -248,7 +246,7 @@ class ShizukuAudioBridge(
                         activeRecordingSnapshot = snapshot.ifBlank { "—" },
                     )
                 )
-            }.onFailure { error -> publishError("Falha ao ler Game Native Effects", error) }
+            }.onFailure { publishError("Falha ao ler Game Native Effects", it) }
         }
     }
 
@@ -257,7 +255,7 @@ class ShizukuAudioBridge(
             ShizukuAudioRuntime.publish(
                 PrivilegedAudioReport(
                     state = ShizukuBridgeState.NOT_RUNNING,
-                    recommendation = "Shizuku não detectado. Inicie o Shizuku; no Android 11+ dá para usar Depuração sem fio sem PC.",
+                    recommendation = "Shizuku não detectado. Inicie o Shizuku e tente novamente.",
                 )
             )
             return
@@ -282,7 +280,7 @@ class ShizukuAudioBridge(
             ShizukuAudioRuntime.publish(
                 currentBaseReport().copy(
                     state = ShizukuBridgeState.PERMISSION_REQUIRED,
-                    recommendation = "Shizuku está ativo. Toque em 'Autorizar Shizuku' para liberar o diagnóstico privilegiado.",
+                    recommendation = "Shizuku está ativo. Toque em Autorizar Shizuku.",
                 )
             )
             return
@@ -306,7 +304,7 @@ class ShizukuAudioBridge(
             )
         )
         runCatching { Shizuku.bindUserService(serviceArgs, serviceConnection) }
-            .onFailure { error -> publishError("Falha ao iniciar UserService Shizuku", error) }
+            .onFailure { publishError("Falha ao iniciar UserService Shizuku", it) }
     }
 
     private fun runFullDiagnostics() {
@@ -342,11 +340,11 @@ class ShizukuAudioBridge(
                 val gameStatus = service.getGameBridgeStatus().orEmpty()
                 val gameEnabled = gameStatus.startsWith("ENABLED") || gameStatus.startsWith("ACTIVE")
 
-                val combined = listOf(audio, flinger, policy, configs, recordingSnapshot).joinToString("\n").lowercase(Locale.ROOT)
+                val combined = listOf(audio, flinger, policy, configs, recordingSnapshot)
+                    .joinToString("\n").lowercase(Locale.ROOT)
+
                 val voiceCommunicationSeen =
-                    "voice_communication" in combined ||
-                        "voice communication" in combined ||
-                        "source: 7" in combined
+                    "voice_communication" in combined || "voice communication" in combined || "source: 7" in combined
                 val preprocessSeen = "preprocess" in combined || "pre_processing" in combined
 
                 val nativeEffects = buildList {
@@ -367,13 +365,12 @@ class ShizukuAudioBridge(
 
                 val recommendation = when (verdict) {
                     GameBridgeVerdict.ROOT_SYSTEM_BRIDGE_READY ->
-                        "Shizuku está em modo ROOT. Game Native Effects pode ser testado agora; bridge custom system-wide continua disponível para a próxima camada."
+                        "Shizuku está em modo ROOT. O monitor Binder de sessões está disponível."
                     GameBridgeVerdict.ROUTING_PERMISSION_CANDIDATE ->
-                        "Permissões críticas confirmadas. O alpha12 pode anexar NS/AEC nativos às sessões externas depois de confirmar que o motor local liberou o microfone."
+                        "Alpha13 usa IAudioService Binder diretamente para observar sessões externas e evitar a limitação de Context do UserService."
                     GameBridgeVerdict.DIAGNOSTICS_ONLY ->
-                        "Shizuku shell funciona para diagnóstico, mas não recebeu permissão suficiente para controlar sessões de captura neste aparelho."
-                    GameBridgeVerdict.SHIZUKU_NOT_READY ->
-                        "Inicie e autorize o Shizuku."
+                        "Shizuku funciona para diagnóstico, mas não recebeu permissão suficiente para controlar sessões de captura."
+                    GameBridgeVerdict.SHIZUKU_NOT_READY -> "Inicie e autorize o Shizuku."
                 }
 
                 ShizukuAudioRuntime.publish(
@@ -434,7 +431,7 @@ class ShizukuAudioBridge(
             currentBaseReport().copy(
                 state = ShizukuBridgeState.ERROR,
                 lastError = "$prefix: ${error.javaClass.simpleName}: ${error.message ?: "sem detalhe"}",
-                recommendation = "A alteração foi interrompida; o ClearMic não edita arquivos ou políticas persistentes nesta etapa.",
+                recommendation = "A alteração foi interrompida; nenhuma política persistente de áudio foi modificada.",
             )
         )
     }
@@ -450,16 +447,15 @@ class ShizukuAudioBridge(
             "can't find service" !in lower
     }
 
-    private fun containsEffect(text: String, vararg keys: String): Boolean =
-        keys.any { key -> key in text }
+    private fun containsEffect(text: String, vararg keys: String): Boolean = keys.any { it in text }
 
     private fun extractPackageHints(text: String): List<String> {
         val packageRegex = Regex("\\b[a-zA-Z][a-zA-Z0-9_]*(?:\\.[a-zA-Z0-9_]+){2,}\\b")
-        val interestingLines = text.lineSequence().filter { line ->
-            val lower = line.lowercase(Locale.ROOT)
-            "record" in lower || "capture" in lower || "package" in lower || "active" in lower || "pkg=" in lower
-        }
-        return interestingLines
+        return text.lineSequence()
+            .filter {
+                val lower = it.lowercase(Locale.ROOT)
+                "record" in lower || "capture" in lower || "package" in lower || "active" in lower || "pkg=" in lower
+            }
             .flatMap { packageRegex.findAll(it).map { match -> match.value } }
             .filterNot { it.startsWith("android.media.") || it.startsWith("android.permission.") }
             .distinct()
@@ -467,15 +463,14 @@ class ShizukuAudioBridge(
             .toList()
     }
 
-    private fun extractCaptureHints(text: String): List<String> =
-        text.lineSequence()
-            .map { it.trim() }
-            .filter { line ->
-                val lower = line.lowercase(Locale.ROOT)
-                line.length in 4..260 &&
-                    ("record" in lower || "capture" in lower || "voice_communication" in lower || "silenced" in lower || "session=" in lower)
-            }
-            .distinct()
-            .take(MAX_HINT_LINES)
-            .toList()
+    private fun extractCaptureHints(text: String): List<String> = text.lineSequence()
+        .map { it.trim() }
+        .filter {
+            val lower = it.lowercase(Locale.ROOT)
+            it.length in 4..260 &&
+                ("record" in lower || "capture" in lower || "voice_communication" in lower || "silenced" in lower || "session=" in lower)
+        }
+        .distinct()
+        .take(MAX_HINT_LINES)
+        .toList()
 }
