@@ -17,13 +17,25 @@ val hasReleaseSigning = listOf(
 android {
     namespace = "io.github.astromg01.clearmic"
     compileSdk = 36
+    ndkVersion = "26.3.11579264"
 
     defaultConfig {
         applicationId = "io.github.astromg01.clearmic"
         minSdk = 28
         targetSdk = 36
-        versionCode = 2
-        versionName = "0.2.0-alpha02"
+        versionCode = 3
+        versionName = "0.3.0-alpha03"
+
+        ndk {
+            abiFilters += listOf("arm64-v8a")
+        }
+    }
+
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+            version = "3.22.1"
+        }
     }
 
     buildFeatures {
