@@ -34,6 +34,7 @@ public final class ShizukuAudioUserService extends IShizukuAudioService.Stub {
 
     private volatile boolean enabled;
     private volatile Thread monitorThread;
+    private volatile String profile = SourceDefaultNsController.PROFILE_BALANCED;
     private volatile String status = "DISABLED";
     private volatile String monitor = "MONITOR: not started";
     private volatile String inventory = "NS_IMPLS: not scanned";
@@ -48,7 +49,7 @@ public final class ShizukuAudioUserService extends IShizukuAudioService.Stub {
 
     @Override
     public String getIdentity() {
-        return "uid=" + Os.getuid() + ";pid=" + Process.myPid() + ";alpha15";
+        return "uid=" + Os.getuid() + ";pid=" + Process.myPid() + ";alpha16";
     }
 
     @Override
@@ -86,25 +87,39 @@ public final class ShizukuAudioUserService extends IShizukuAudioService.Stub {
     }
 
     @Override
+    public String setGameEnhancementProfile(String requestedProfile) {
+        String normalized = SourceDefaultNsController.normalizeProfile(requestedProfile);
+        if (enabled) {
+            return "PROFILE_LOCKED: disable Game Enhance before changing profile • current=" + profile;
+        }
+        profile = normalized;
+        sourceDefaults.setProfile(profile);
+        sourceDefaultStatus = "SOURCE_DEFAULT[" + profile + "]: ready";
+        status = "DISABLED • profile=" + profile;
+        return "PROFILE: " + profile;
+    }
+
+    @Override
     public String setGameBridgeEnabled(boolean value) {
         if (value) {
             inventory = SessionNoiseEffectInstaller.inventory();
             lastExternal = "LAST_EXTERNAL: none seen since enable";
             monitor = "MONITOR: starting IAudioService Binder";
 
-            // Important: register transient defaults BEFORE the game creates its AudioRecord.
-            // On Samsung, post-hoc AudioEffect(sessionId) returned ERROR_NO_INIT (-3).
+            // Register transient defaults BEFORE the game creates its AudioRecord.
+            // Alpha15 proved this is the working Samsung path for NS inheritance.
+            sourceDefaults.setProfile(profile);
             sourceDefaultStatus = sourceDefaults.enable();
 
             enabled = true;
             startMonitor();
-            status = "ENABLED • source-default NS registered; waiting for game/voice recording session";
+            status = "ENABLED • profile=" + profile + " • source-default enhancements registered; waiting for game/voice recording session";
         } else {
             enabled = false;
             sourceDefaults.release();
             sourceDefaultStatus = sourceDefaults.status();
             releaseAll();
-            status = "DISABLED • source-default and session effects released";
+            status = "DISABLED • profile=" + profile + " • transient source-default and session effects released";
         }
         return status;
     }
@@ -159,14 +174,23 @@ public final class ShizukuAudioUserService extends IShizukuAudioService.Stub {
             }
 
             eligible.add(target.session);
-            boolean inheritedNs = hasNoiseSuppressor(target.effects);
+            boolean inheritedNs = hasEffect(target.effects, "noise suppress", "noise_suppress", "ns");
+            boolean inheritedAec = hasEffect(target.effects, "acoustic echo", "acoustic_echo", "aec");
+            boolean inheritedAgc = hasEffect(target.effects, "automatic gain", "automatic_gain", "agc");
+
+            StringBuilder verified = new StringBuilder();
+            if (inheritedNs) verified.append("NS");
+            if (inheritedAec) appendEffect(verified, "AEC");
+            if (inheritedAgc) appendEffect(verified, "AGC");
+
             String targetLabel = target.label()
                     + (target.effects.isEmpty() ? "" : " effects=" + target.effects)
-                    + (inheritedNs ? " DEFAULT_NS=IN_CHAIN" : "");
+                    + (inheritedNs ? " DEFAULT_NS=IN_CHAIN" : "")
+                    + (verified.length() > 0 ? " VERIFIED=" + verified : " VERIFIED=none");
             active.add(targetLabel);
 
-            // If AudioPolicy already attached NS from SourceDefaultEffect, do not create a
-            // second engine. Otherwise retain alpha14's post-hoc route only as a fallback probe.
+            // Keep alpha14's post-hoc NS probe only as a fallback when the source-default
+            // chain did not inherit NS. AEC/AGC are never forced post-hoc.
             if (!inheritedNs) {
                 synchronized (lock) {
                     SessionNoiseEffectInstaller.Handle current = effects.get(target.session);
@@ -194,7 +218,7 @@ public final class ShizukuAudioUserService extends IShizukuAudioService.Stub {
 
         if (!enabled) return;
         if (active.isEmpty()) {
-            status = "ENABLED • no eligible unsilenced mic session"
+            status = "ENABLED • profile=" + profile + " • no eligible unsilenced mic session"
                     + (silenced > 0 ? " • silenced sessions=" + silenced : "");
             return;
         }
@@ -203,7 +227,7 @@ public final class ShizukuAudioUserService extends IShizukuAudioService.Stub {
         String targetSummary = String.join(" | ", active)
                 + (effectSummary.isEmpty() ? "" : " • " + effectSummary);
         lastExternal = "LAST_EXTERNAL: " + targetSummary;
-        status = "ACTIVE • targets=" + active.size() + " • " + targetSummary;
+        status = "ACTIVE • profile=" + profile + " • targets=" + active.size() + " • " + targetSummary;
     }
 
     private boolean eligible(AudioRecordingSessionMonitor.Target target) {
@@ -218,11 +242,18 @@ public final class ShizukuAudioUserService extends IShizukuAudioService.Stub {
                 || source == MediaRecorder.AudioSource.VOICE_PERFORMANCE;
     }
 
-    private static boolean hasNoiseSuppressor(String effectsText) {
+    private static boolean hasEffect(String effectsText, String... names) {
         if (effectsText == null || effectsText.isEmpty()) return false;
         String value = effectsText.toLowerCase(Locale.ROOT);
-        return value.contains("noise suppress") || value.contains("noise_suppress") || value.equals("ns")
-                || value.contains(",ns") || value.contains("ns,");
+        for (String name : names) {
+            if (value.contains(name.toLowerCase(Locale.ROOT))) return true;
+        }
+        return false;
+    }
+
+    private static void appendEffect(StringBuilder out, String value) {
+        if (out.length() > 0) out.append('+');
+        out.append(value);
     }
 
     private String effectSummary() {
