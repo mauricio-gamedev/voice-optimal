@@ -18,6 +18,8 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.LinearProgressIndicator
@@ -37,6 +39,7 @@ import io.github.astromg01.clearmic.audio.EngineState
 import io.github.astromg01.clearmic.service.BackgroundRuntime
 import io.github.astromg01.clearmic.service.GameMicService
 import io.github.astromg01.clearmic.ui.theme.ClearMicTheme
+import kotlin.math.roundToInt
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -106,12 +109,13 @@ class MainActivity : ComponentActivity() {
                 modifier = Modifier
                     .fillMaxSize()
                     .padding(padding)
+                    .verticalScroll(rememberScrollState())
                     .padding(20.dp),
                 verticalArrangement = Arrangement.spacedBy(16.dp),
             ) {
                 Text("ClearMic", style = MaterialTheme.typography.headlineLarge)
                 Text(
-                    "Milestone 2 • background survival • ${BuildConfig.VERSION_NAME}",
+                    "Milestone 3 • native audio + DSP • ${BuildConfig.VERSION_NAME}",
                     style = MaterialTheme.typography.labelLarge,
                     color = MaterialTheme.colorScheme.primary,
                 )
@@ -120,14 +124,28 @@ class MainActivity : ComponentActivity() {
                     Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                         Text("Motor de áudio", style = MaterialTheme.typography.titleMedium)
                         Text("Estado: ${state.name}")
+                        Text("Backend: ${stats.engineBackend}")
+                        Text("DSP: ${stats.dspBackend}")
                         Text("Nível: %.1f dBFS".format(stats.rmsDb))
                         LinearProgressIndicator(
                             progress = { stats.peak },
                             modifier = Modifier.fillMaxWidth(),
                         )
+                        Text("Voz detectada: ${stats.voiceProbability.times(100f).roundToInt()}%")
+                        Text("Piso de ruído: %.1f dBFS".format(stats.noiseFloorDb))
+                        Text("Frames capturados: ${stats.capturedFrames}")
+                        Text("XRuns: ${stats.xrunCount}")
+
+                        if (stats.capturedFrames > 48_000L && stats.rmsDb <= -119.5f) {
+                            Text(
+                                "Diagnóstico: o stream está entregando frames, mas eles estão silenciosos. Vamos investigar rota/fonte do microfone.",
+                                color = MaterialTheme.colorScheme.error,
+                            )
+                        }
+
                         Text("Noise Suppressor: ${if (stats.noiseSuppressorEnabled) "ON" else "OFF"}")
                         Text("Echo Canceler: ${if (stats.echoCancelerEnabled) "ON" else "OFF"}")
-                        Text("AGC: ${if (stats.automaticGainEnabled) "ON" else "OFF"}")
+                        Text("AGC Android: ${if (stats.automaticGainEnabled) "ON" else "OFF"}")
                     }
                 }
 
@@ -168,8 +186,7 @@ class MainActivity : ComponentActivity() {
 
                 Spacer(Modifier.height(4.dp))
                 Text(
-                    "O ClearMic agora mantém a intenção de execução e permite que o Android recupere o foreground service após encerramentos de processo. " +
-                        "Isso não contorna Force Stop nem as regras de privacidade do microfone; a ativação inicial continua sendo uma ação explícita do usuário.",
+                    "Camada 2 agora tenta AAudio/C++ primeiro e mantém AudioRecord como fallback. A Camada 3 inicia com DSP adaptativo nativo de baixo custo; WebRTC APM/RNNoise entram após medirmos CPU, xruns e captura real neste núcleo.",
                     style = MaterialTheme.typography.bodyMedium,
                 )
             }
