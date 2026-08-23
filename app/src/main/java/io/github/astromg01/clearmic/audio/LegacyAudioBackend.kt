@@ -16,8 +16,9 @@ internal class LegacyAudioBackend(
         private const val FRAME_SAMPLES = 480
     }
 
-    override val engineName: String = "AudioRecord fallback"
+    override val engineName: String = "AudioRecord safe fallback"
     override val dspName: String = "Kotlin Lightweight"
+    override val allowPlatformPreprocessing: Boolean = false
 
     @Volatile
     private var running = false
@@ -39,7 +40,7 @@ internal class LegacyAudioBackend(
 
         val recorderBufferBytes = max(minBuffer * 2, FRAME_SAMPLES * 2 * 8)
         val localRecorder = AudioRecord.Builder()
-            .setAudioSource(MediaRecorder.AudioSource.VOICE_COMMUNICATION)
+            .setAudioSource(MediaRecorder.AudioSource.VOICE_RECOGNITION)
             .setAudioFormat(
                 AudioFormat.Builder()
                     .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
@@ -66,13 +67,13 @@ internal class LegacyAudioBackend(
         running = true
         localRecorder.startRecording()
         worker = Thread({ captureLoop(localRecorder) }, "ClearMic-LegacyAudio").apply {
-            priority = Thread.MAX_PRIORITY
+            priority = Thread.NORM_PRIORITY + 2
             start()
         }
     }
 
     private fun captureLoop(localRecorder: AudioRecord) {
-        Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO)
+        Process.setThreadPriority(Process.THREAD_PRIORITY_AUDIO)
         val frame = ShortArray(FRAME_SAMPLES)
         var updateDivider = 0
 
@@ -83,7 +84,7 @@ internal class LegacyAudioBackend(
                 capturedFrames += read
                 processor.process(frame, read)
 
-                if (++updateDivider >= 8) {
+                if (++updateDivider >= 10) {
                     updateDivider = 0
                     var sum = 0.0
                     var peak = 0
@@ -112,7 +113,7 @@ internal class LegacyAudioBackend(
         if (!running && recorder == null) return
         running = false
         runCatching { recorder?.stop() }
-        worker?.join(600)
+        worker?.join(500)
         worker = null
         recorder?.release()
         recorder = null
