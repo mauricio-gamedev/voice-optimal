@@ -12,6 +12,7 @@ data class AudioStats(
     val noiseFloorDb: Float = -120f,
     val xrunCount: Int = 0,
     val capturedFrames: Long = 0L,
+    val fallbackReason: String? = null,
 )
 
 enum class EngineState {
