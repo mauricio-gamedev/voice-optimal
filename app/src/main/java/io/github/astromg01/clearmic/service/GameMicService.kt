@@ -100,15 +100,16 @@ class GameMicService : Service() {
         )
 
         if (AudioRuntime.state.value != EngineState.RUNNING) {
-            runCatching { engine.start() }
-                .onFailure {
-                    survivalManager.markEvent("Falha ao iniciar motor: ${it.javaClass.simpleName}")
-                    AudioRuntime.updateState(EngineState.ERROR)
-                    publishDiagnostics()
-                    stopForeground(STOP_FOREGROUND_REMOVE)
-                    stopSelf()
-                    return
-                }
+            val failure = runCatching { engine.start() }.exceptionOrNull()
+            if (failure != null) {
+                survivalManager.markUserStopped()
+                survivalManager.markEvent("Falha ao iniciar motor: ${failure.javaClass.simpleName}")
+                AudioRuntime.updateState(EngineState.ERROR)
+                publishDiagnostics()
+                stopForeground(STOP_FOREGROUND_REMOVE)
+                stopSelf()
+                return
+            }
         }
 
         if (!recovered) {
