@@ -8,3 +8,9 @@ app/build/
 captures/
 .externalNativeBuild/
 .cxx/
+
+# Never commit app signing material
+*.jks
+*.keystore
+keystore.properties
+signing.properties
