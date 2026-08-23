@@ -31,7 +31,7 @@ GameMicService (foreground)
 AudioEngine
       |-- AndroidPreProcessing (NS / AEC / AGC)
       |-- AudioProcessor
-      |     `-- LightweightVoiceProcessor
+      |     `-- LightweightVoiceProcessor`
       |
 AudioRuntime (state + meters)
 
@@ -47,7 +47,7 @@ Future layers:
 - Android Gradle Plugin 9.3.0
 - Gradle 9.5.0 in CI
 - JDK 17
-- compileSdk 37
+- compileSdk 36
 - targetSdk 36
 - minSdk 28
 - Kotlin / Compose Compiler plugin 2.3.21
