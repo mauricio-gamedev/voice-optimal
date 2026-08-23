@@ -13,6 +13,8 @@ data class AudioStats(
     val xrunCount: Int = 0,
     val capturedFrames: Long = 0L,
     val fallbackReason: String? = null,
+    val captureHealth: String = "IDLE",
+    val captureRecoveryCount: Int = 0,
 )
 
 enum class EngineState {
