@@ -77,7 +77,7 @@ object ShizukuAudioRuntime {
 class ShizukuAudioBridge(context: Context) {
     companion object {
         private const val PERMISSION_REQUEST_CODE = 4109
-        private const val USER_SERVICE_VERSION = 7
+        private const val USER_SERVICE_VERSION = 10
         private const val MAX_HINT_LINES = 8
     }
 
@@ -392,9 +392,9 @@ class ShizukuAudioBridge(context: Context) {
 
                 val recommendation = when (verdict) {
                     GameBridgeVerdict.ROOT_SYSTEM_BRIDGE_READY ->
-                        "Alpha16 pode usar perfis transitórios NS/AEC/AGC e verificar a cadeia real do jogo."
+                        "Alpha20 pode testar o AI System Injector e mantém o NS source-default como fallback."
                     GameBridgeVerdict.ROUTING_PERMISSION_CANDIDATE ->
-                        "Alpha16 aplica perfis de voz antes da captura: NS sempre; AEC/AGC somente quando apropriados e disponíveis."
+                        "Alpha20 usa MODIFY_AUDIO_ROUTING para tentar injetar PCM RNNoise no gravador do jogo; NS continua como fallback seguro."
                     GameBridgeVerdict.DIAGNOSTICS_ONLY ->
                         "Shizuku funciona para diagnóstico, mas não recebeu permissão suficiente para controlar sessões de captura."
                     GameBridgeVerdict.SHIZUKU_NOT_READY -> "Inicie e autorize o Shizuku."
