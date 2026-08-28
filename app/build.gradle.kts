@@ -18,8 +18,8 @@ android {
         applicationId = "io.github.astromg01.clearmic"
         minSdk = 28
         targetSdk = 36
-        versionCode = 19
-        versionName = "0.6.0-alpha19"
+        versionCode = 20
+        versionName = "0.7.0-alpha20"
         ndk { abiFilters += listOf("arm64-v8a") }
     }
 
