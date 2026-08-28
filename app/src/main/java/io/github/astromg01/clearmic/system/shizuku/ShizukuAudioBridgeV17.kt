@@ -15,11 +15,11 @@ import rikka.shizuku.Shizuku
 import java.util.Locale
 import java.util.concurrent.atomic.AtomicBoolean
 
-/** Alpha18 bridge: persistent profile, auto-rearm, UserService v9 and protection-first diagnostics. */
+/** Alpha20 bridge: persistent profile, auto-rearm, UserService v10 and AI PCM injector diagnostics. */
 class ShizukuAudioBridgeV17(context: Context) {
     companion object {
         private const val PERMISSION_REQUEST_CODE = 4117
-        private const val USER_SERVICE_VERSION = 9
+        private const val USER_SERVICE_VERSION = 10
         private const val PREFS = "clearmic_game_enhance"
         private const val KEY_PROFILE = "profile"
         private const val KEY_ARMED = "protection_armed"
@@ -314,8 +314,8 @@ class ShizukuAudioBridgeV17(context: Context) {
                     verdict = verdict,
                     recommendation = when (verdict) {
                         GameBridgeVerdict.ROUTING_PERMISSION_CANDIDATE,
-                        GameBridgeVerdict.ROOT_SYSTEM_BRIDGE_READY -> "Game Voice Protection pronta. O perfil Forte agora testa uma cadeia adaptativa vendor segura e só confirma o que aparece na sessão real."
-                        GameBridgeVerdict.DIAGNOSTICS_ONLY -> "Shizuku conectado, mas faltam permissões para registrar efeitos de entrada."
+                        GameBridgeVerdict.ROOT_SYSTEM_BRIDGE_READY -> "Alpha20: NS continua como fallback e o daemon tenta AudioPolicy + RNNoise para entregar PCM limpo ao gravador do jogo."
+                        GameBridgeVerdict.DIAGNOSTICS_ONLY -> "Shizuku conectado, mas faltam permissões para registrar a rota de injeção de áudio."
                         GameBridgeVerdict.SHIZUKU_NOT_READY -> "Inicie o Shizuku."
                     },
                     scanDurationMs = SystemClock.elapsedRealtime() - startedAt,
