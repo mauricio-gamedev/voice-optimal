@@ -68,7 +68,7 @@ class AudioEngine(
             captureRecoveryCount = 0
 
             val activation = runCatching {
-                activate(NativeAudioBackend())
+                activate(NativeAudioBackend(context))
             }.getOrElse { nativeError ->
                 fallbackReason = "AAudio não abriu (${nativeError.javaClass.simpleName}); usando AudioRecord seguro."
                 runCatching { activate(LegacyAudioBackend()) }
@@ -162,8 +162,6 @@ class AudioEngine(
             nativeRouteVerified = true
             captureHealth = "LIVE"
         } else if (framesAdvanced && nativeRouteVerified) {
-            // Android can intentionally silence a background ordinary app while another app
-            // owns microphone priority. Keep the stream alive and wait for unsilencing.
             captureHealth = "SILENCED_BY_SYSTEM"
         }
 
@@ -195,10 +193,6 @@ class AudioEngine(
         publishSnapshot(snapshot)
     }
 
-    /**
-     * Called when the Activity becomes visible again. If Android left AAudio frozen or
-     * hard-silenced during an app switch, reopen the native session immediately.
-     */
     fun onClientVisible(): Boolean {
         if (!running || backend !is NativeAudioBackend) return false
 
@@ -233,7 +227,7 @@ class AudioEngine(
         effects = null
         runCatching { oldBackend?.stop() }
 
-        val activation = runCatching { activate(NativeAudioBackend()) }
+        val activation = runCatching { activate(NativeAudioBackend(context)) }
             .getOrElse {
                 fallbackReason = "$reason Reabertura nativa falhou: ${it.javaClass.simpleName}."
                 return@synchronized switchToLegacy("$reason AAudio não reabriu; fallback seguro ativado.")
@@ -306,6 +300,10 @@ class AudioEngine(
                 fallbackReason = fallbackReason,
                 captureHealth = captureHealth,
                 captureRecoveryCount = captureRecoveryCount,
+                aiActive = snapshot.aiActive,
+                aiVad = snapshot.aiVad.coerceIn(0f, 1f),
+                aiProcessingMs = snapshot.aiProcessingMs.coerceAtLeast(0f),
+                aiEffectiveProfile = snapshot.aiEffectiveProfile,
             )
         )
     }

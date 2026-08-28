@@ -15,6 +15,10 @@ data class AudioStats(
     val fallbackReason: String? = null,
     val captureHealth: String = "IDLE",
     val captureRecoveryCount: Int = 0,
+    val aiActive: Boolean = false,
+    val aiVad: Float = 0f,
+    val aiProcessingMs: Float = 0f,
+    val aiEffectiveProfile: AiDspProfile = AiDspProfile.OFF,
 )
 
 enum class EngineState {
