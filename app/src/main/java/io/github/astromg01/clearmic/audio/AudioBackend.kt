@@ -7,6 +7,10 @@ internal data class BackendSnapshot(
     val noiseFloorDb: Float = -120f,
     val xrunCount: Int = 0,
     val capturedFrames: Long = 0L,
+    val aiActive: Boolean = false,
+    val aiVad: Float = 0f,
+    val aiProcessingMs: Float = 0f,
+    val aiEffectiveProfile: AiDspProfile = AiDspProfile.OFF,
 )
 
 internal interface AudioBackend {
