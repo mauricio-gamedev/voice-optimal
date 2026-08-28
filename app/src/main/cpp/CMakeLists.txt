@@ -96,3 +96,27 @@ target_link_libraries(
     android
     m
 )
+
+# Dedicated JNI library for the Shizuku AudioPolicy injector. It processes
+# caller-provided PCM frames and deliberately does not own/open an AAudio stream.
+add_library(
+    clearmic_ai_stream
+    SHARED
+    ai_stream_processor.cpp
+)
+target_compile_features(clearmic_ai_stream PRIVATE cxx_std_17)
+target_compile_options(
+    clearmic_ai_stream
+    PRIVATE
+    -O3
+    -fno-exceptions
+    -fno-rtti
+)
+target_link_libraries(
+    clearmic_ai_stream
+    PRIVATE
+    rnnoise
+    log
+    android
+    m
+)
