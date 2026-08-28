@@ -56,7 +56,7 @@ internal fun ShizukuIntegrationPanel(
     LaunchedEffect(report.gameBridgeEnabled) {
         if (report.gameBridgeEnabled) {
             while (true) {
-                delay(1_500L)
+                delay(1_000L)
                 bridge.refreshGameBridgeStatus()
             }
         }
@@ -82,7 +82,7 @@ internal fun ShizukuIntegrationPanel(
             val released = AudioRuntime.state.value == EngineState.IDLE ||
                 AudioRuntime.state.value == EngineState.ERROR
             if (released) {
-                handoffMessage = "Registrando ${profileLabel(report.gameEnhancementProfile)} antes do jogo abrir o microfone…"
+                handoffMessage = "Armando NS de segurança + AI System Injector antes do jogo…"
                 bridge.setGameBridgeEnabled(true)
                 delay(350L)
                 bridge.refreshGameBridgeStatus()
@@ -101,7 +101,7 @@ internal fun ShizukuIntegrationPanel(
         ) {
             Text("Game Voice Protection", style = MaterialTheme.typography.titleLarge)
             Text(
-                "Alpha18 • adaptive voice chain",
+                "Alpha20 • AI System Injector experimental",
                 style = MaterialTheme.typography.labelLarge,
                 color = MaterialTheme.colorScheme.primary,
             )
@@ -119,19 +119,23 @@ internal fun ShizukuIntegrationPanel(
             verifiedChain(report.gameBridgeStatus)?.let {
                 Text("Cadeia verificada: $it", color = MaterialTheme.colorScheme.primary)
             }
+            aiRouteSummary(report.gameBridgeStatus)?.let {
+                Text("AI System Route: $it", color = aiRouteColor(it))
+            }
             healthMetrics(report.gameBridgeStatus)?.let { (protected, failed) ->
                 Text("Sessões protegidas: $protected • falhas confirmadas: $failed")
-            }
-            advancedMetric(report.gameBridgeStatus)?.let {
-                Text("Sessões com aprimoramento extra: $it")
             }
 
             Text(
                 when {
+                    report.gameBridgeStatus.contains("AI_ROUTE: INJECTING") ->
+                        "RNNoise está produzindo PCM para a rota AudioPolicy do app alvo. O primeiro uso aprende o UID; uma nova sessão de voz é o teste mais forte da injeção ponta a ponta."
+                    report.gameBridgeStatus.contains("AI_ROUTE: FALLBACK") ->
+                        "A rota AI não iniciou neste aparelho/sessão. O Noise Suppression nativo continua armado como fallback e o erro exato aparece em Detalhes técnicos."
                     report.gameBridgeEnabled && protection.contains("CONFIRMADA") ->
-                        "A cadeia real do jogo foi verificada. Se aparecer NS+AEC, NS+AGC ou NS+VENDOR, o aprimoramento extra também entrou de verdade."
+                        "A proteção nativa foi confirmada. O alpha20 também tenta aprender o UID do app para registrar a rota RNNoise."
                     report.gameBridgeEnabled ->
-                        "Proteção armada. Pode abrir o jogo e usar o chat de voz; o daemon detecta e valida a cadeia automaticamente."
+                        "Proteção armada. Abra o jogo e use o chat de voz para o daemon aprender o app e tentar a rota PCM com RNNoise."
                     else ->
                         "Escolha um perfil e ative antes de abrir o chat de voz do jogo."
                 },
@@ -194,7 +198,7 @@ internal fun ShizukuIntegrationPanel(
             }
 
             Text(
-                "Segurança: efeitos extras do perfil Forte só são tentados quando o firmware os anuncia como preprocessadores de voz compatíveis. Efeitos de saída como EQ, bass, reverb e virtualizer são bloqueados. Tudo é transitório e liberado ao desativar.",
+                "Segurança: o alpha20 não altera /system nem /vendor. Se AudioPolicy/RNNoise não puderem assumir a rota, o daemon desmonta o injector e mantém o Noise Suppression nativo já validado como fallback.",
                 style = MaterialTheme.typography.bodySmall,
             )
         }
@@ -227,7 +231,7 @@ private fun TechnicalDetails(
         }
 
         Text("Status bruto do daemon:", style = MaterialTheme.typography.labelLarge)
-        report.gameBridgeStatus.lineSequence().take(12).forEach {
+        report.gameBridgeStatus.lineSequence().take(14).forEach {
             Text(it, style = MaterialTheme.typography.bodySmall)
         }
 
@@ -278,6 +282,7 @@ private fun protectionLabel(report: PrivilegedAudioReport): String {
     val status = report.gameBridgeStatus
     return when {
         !report.gameBridgeEnabled -> "PROTEÇÃO DESATIVADA"
+        "AI_ROUTE: INJECTING" in status -> "AI PCM ATIVO • VALIDAR NO JOGO"
         "PROTECTION: CONFIRMED" in status || "VERIFIED=NS" in status -> "PROTEÇÃO CONFIRMADA ✓"
         "PROTECTION: WARNING" in status || "ERROR:" in status -> "ATENÇÃO • EFEITO NÃO CONFIRMADO"
         else -> "PROTEÇÃO ARMADA • AGUARDANDO JOGO"
@@ -291,6 +296,13 @@ private fun protectionColor(report: PrivilegedAudioReport) = when {
     else -> MaterialTheme.colorScheme.onSurface
 }
 
+@Composable
+private fun aiRouteColor(summary: String) = when {
+    summary.startsWith("INJECTING") -> MaterialTheme.colorScheme.primary
+    summary.startsWith("FALLBACK") -> MaterialTheme.colorScheme.error
+    else -> MaterialTheme.colorScheme.onSurface
+}
+
 private fun lastPackage(status: String): String? {
     val health = Regex("PROTECTION:.*?last=([^ •\\n]+)").find(status)?.groupValues?.getOrNull(1)
     if (!health.isNullOrBlank() && health != "—") return health
@@ -298,29 +310,29 @@ private fun lastPackage(status: String): String? {
 }
 
 private fun verifiedChain(status: String): String? {
-    val health = Regex("chain=([A-Z+]+)").find(status)?.groupValues?.getOrNull(1)
+    val health = Regex("chain=([A-Z_+]+)").find(status)?.groupValues?.getOrNull(1)
     if (!health.isNullOrBlank()) return health
-    return Regex("VERIFIED=([A-Z+]+)").find(status)?.groupValues?.getOrNull(1)
+    return Regex("VERIFIED=([A-Z_+]+)").find(status)?.groupValues?.getOrNull(1)
 }
+
+private fun aiRouteSummary(status: String): String? =
+    status.lineSequence().firstOrNull { it.startsWith("AI_ROUTE:") }?.removePrefix("AI_ROUTE: ")
 
 private fun healthMetrics(status: String): Pair<Int, Int>? {
     val match = Regex("protected=(\\d+)\\s+•\\s+failed=(\\d+)").find(status) ?: return null
     return (match.groupValues[1].toIntOrNull() ?: 0) to (match.groupValues[2].toIntOrNull() ?: 0)
 }
 
-private fun advancedMetric(status: String): Int? =
-    Regex("advanced=(\\d+)").find(status)?.groupValues?.getOrNull(1)?.toIntOrNull()
-
 private fun profileDescription(profile: String): String = when (profile) {
-    "LIGHT" -> "Leve: Noise Suppression somente. Máxima preservação do timbre."
-    "STRONG" -> "Forte adaptativo: NS + AEC/AGC quando apropriados e até dois preprocessadores vendor de voz considerados seguros. Extras só contam se aparecerem na cadeia real do jogo."
-    else -> "Balanceado: NS sempre + AEC apenas em VOICE_COMMUNICATION. Recomendado para estabilidade."
+    "LIGHT" -> "Leve: RNNoise 35% no AI System Route + NS nativo como fallback. Máxima preservação do timbre."
+    "STRONG" -> "Forte: RNNoise 100% + leveling/limiter no PCM injetado. Use para ambiente mais barulhento; o orçamento de CPU continua protegido."
+    else -> "Balanceado: RNNoise 70% + leveling suave no PCM injetado. Recomendado para começar; NS nativo permanece como fallback."
 }
 
 private fun profileLabel(profile: String): String = when (profile) {
-    "LIGHT" -> "Leve • NS"
-    "STRONG" -> "Forte adaptativo • NS + extras verificados"
-    else -> "Balanceado • NS + AEC em comunicação"
+    "LIGHT" -> "Leve • AI 35%"
+    "STRONG" -> "Forte • AI 100%"
+    else -> "Balanceado • AI 70%"
 }
 
 private fun stopLocalEngine(context: Context) {
@@ -349,7 +361,7 @@ private fun stateLabel(state: ShizukuBridgeState): String = when (state) {
 private fun verdictLabel(verdict: GameBridgeVerdict): String = when (verdict) {
     GameBridgeVerdict.SHIZUKU_NOT_READY -> "SHIZUKU NÃO PRONTO"
     GameBridgeVerdict.DIAGNOSTICS_ONLY -> "SOMENTE DIAGNÓSTICO"
-    GameBridgeVerdict.ROUTING_PERMISSION_CANDIDATE -> "SOURCE BRIDGE PRONTO"
+    GameBridgeVerdict.ROUTING_PERMISSION_CANDIDATE -> "AI ROUTING CANDIDATE"
     GameBridgeVerdict.ROOT_SYSTEM_BRIDGE_READY -> "ROOT SYSTEM BRIDGE"
 }
 
