@@ -24,7 +24,6 @@ FetchContent_Declare(
     rnnoise_model
     URL https://media.xiph.org/rnnoise/models/rnnoise_data-${RNNOISE_MODEL_SHA}.tar.gz
     URL_HASH SHA256=${RNNOISE_MODEL_SHA}
-    DOWNLOAD_EXTRACT_TIMESTAMP TRUE
 )
 FetchContent_GetProperties(rnnoise_model)
 if(NOT rnnoise_model_POPULATED)
