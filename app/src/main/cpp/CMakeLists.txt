@@ -66,7 +66,9 @@ target_include_directories(
     ${rnnoise_source_SOURCE_DIR}/src
 )
 target_compile_definitions(rnnoise PRIVATE RNNOISE_BUILD)
-target_compile_options(rnnoise PRIVATE -O3 -ffast-math)
+# RNNoise inherits Opus DSP helpers that explicitly reject -ffast-math
+# unless FLOAT_APPROX is enabled. Keep strict IEEE math here for safety.
+target_compile_options(rnnoise PRIVATE -O3)
 target_link_libraries(rnnoise PRIVATE m)
 
 add_library(
