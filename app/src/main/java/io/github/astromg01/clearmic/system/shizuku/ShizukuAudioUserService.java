@@ -20,21 +20,23 @@ import java.util.Set;
 import java.util.concurrent.FutureTask;
 import java.util.concurrent.TimeUnit;
 
+/** Shizuku-side audio daemon for source-default protection + alpha20 AI PCM injection. */
 @Keep
 public final class ShizukuAudioUserService extends IShizukuAudioService.Stub {
     private static final int MAX_OUTPUT_CHARS = 384 * 1024;
     private static final long COMMAND_TIMEOUT_SECONDS = 6L;
     private static final long MONITOR_IDLE_INTERVAL_MS = 1200L;
-    private static final long MONITOR_ACTIVE_INTERVAL_MS = 300L;
+    private static final long MONITOR_ACTIVE_INTERVAL_MS = 250L;
     private static final String CLEARMIC_PACKAGE = "io.github.astromg01.clearmic";
 
     private final Object lock = new Object();
     private final Map<Integer, SessionNoiseEffectInstaller.Handle> effects = new HashMap<>();
     private final Map<Integer, Integer> attempts = new HashMap<>();
     private final Set<String> verifiedHistory = new HashSet<>();
-    private final Set<String> advancedHistory = new HashSet<>();
     private final Set<String> failedHistory = new HashSet<>();
     private final SourceDefaultNsController sourceDefaults = new SourceDefaultNsController();
+    private final Context context;
+    private final AiSystemInjectionBridge aiBridge;
 
     private volatile boolean enabled;
     private volatile Thread monitorThread;
@@ -46,19 +48,25 @@ public final class ShizukuAudioUserService extends IShizukuAudioService.Stub {
     private volatile String lastExternal = "LAST_EXTERNAL: none seen since enable";
     private volatile String lastSnapshot = "recordings=0";
     private volatile int protectedSessions;
-    private volatile int advancedSessions;
     private volatile int failedSessions;
     private volatile String lastProtectedPackage = "—";
     private volatile String lastVerifiedChain = "—";
 
-    public ShizukuAudioUserService() {}
+    @Keep
+    public ShizukuAudioUserService() {
+        this.context = null;
+        this.aiBridge = new AiSystemInjectionBridge(null);
+    }
 
     @Keep
-    public ShizukuAudioUserService(Context ignored) {}
+    public ShizukuAudioUserService(Context context) {
+        this.context = context;
+        this.aiBridge = new AiSystemInjectionBridge(context);
+    }
 
     @Override
     public String getIdentity() {
-        return "uid=" + Os.getuid() + ";pid=" + Process.myPid() + ";alpha18";
+        return "uid=" + Os.getuid() + ";pid=" + Process.myPid() + ";alpha20-ai-injector";
     }
 
     @Override
@@ -103,7 +111,7 @@ public final class ShizukuAudioUserService extends IShizukuAudioService.Stub {
         }
         profile = normalized;
         sourceDefaults.setProfile(profile);
-        sourceDefaultStatus = "SOURCE_DEFAULT[" + profile + "]: ready";
+        aiBridge.setProfile(profile);
         status = "DISABLED • profile=" + profile;
         return "PROFILE: " + profile;
     }
@@ -114,7 +122,7 @@ public final class ShizukuAudioUserService extends IShizukuAudioService.Stub {
             inventory = SessionNoiseEffectInstaller.inventory();
             lastExternal = "LAST_EXTERNAL: none seen since enable";
             monitor = "MONITOR: starting IAudioService Binder";
-            resetSessionHealth();
+            resetHealth();
 
             sourceDefaults.setProfile(profile);
             sourceDefaultStatus = sourceDefaults.enable();
@@ -126,30 +134,39 @@ public final class ShizukuAudioUserService extends IShizukuAudioService.Stub {
                 return status;
             }
 
+            aiBridge.setProfile(profile);
+            String aiArm = aiBridge.arm();
             enabled = true;
             startMonitor();
             status = "ENABLED • profile=" + profile
-                    + " • source-default enhancements registered; waiting for game/voice recording session";
+                    + " • NS fallback armed • AI System Injector learning target • " + aiArm;
         } else {
             enabled = false;
+            aiBridge.disarm();
             sourceDefaults.release();
             sourceDefaultStatus = sourceDefaults.status();
             releaseAll();
-            status = "DISABLED • profile=" + profile + " • transient enhancements released";
+            status = "DISABLED • profile=" + profile + " • AI injector and transient effects released";
         }
         return status;
     }
 
     @Override
     public String getGameBridgeStatus() {
-        return status + "\n" + protectionSummary() + "\n" + monitor + "\n" + sourceDefaultStatus + "\n" + inventory
-                + "\n" + lastExternal + "\n" + lastSnapshot;
+        return status
+                + "\n" + protectionSummary()
+                + "\n" + aiBridge.status()
+                + "\n" + monitor
+                + "\n" + sourceDefaultStatus
+                + "\n" + inventory
+                + "\n" + lastExternal
+                + "\n" + lastSnapshot;
     }
 
     private void startMonitor() {
         synchronized (lock) {
             if (monitorThread != null && monitorThread.isAlive()) return;
-            monitorThread = new Thread(this::monitorLoop, "ClearMic-GameEffectsMonitor");
+            monitorThread = new Thread(this::monitorLoop, "ClearMic-AudioPolicyMonitor");
             monitorThread.setDaemon(true);
             monitorThread.start();
         }
@@ -157,14 +174,14 @@ public final class ShizukuAudioUserService extends IShizukuAudioService.Stub {
 
     private void monitorLoop() {
         while (enabled) {
-            boolean activeRecords = false;
+            boolean active = false;
             try {
-                activeRecords = monitorPass();
+                active = monitorPass();
             } catch (Throwable error) {
-                status = "ERROR: monitor " + describe(error);
+                status = "ERROR: monitor " + describe(error) + " • " + aiBridge.status();
             }
             try {
-                Thread.sleep(activeRecords ? MONITOR_ACTIVE_INTERVAL_MS : MONITOR_IDLE_INTERVAL_MS);
+                Thread.sleep(active ? MONITOR_ACTIVE_INTERVAL_MS : MONITOR_IDLE_INTERVAL_MS);
             } catch (InterruptedException ignored) {
                 Thread.currentThread().interrupt();
                 break;
@@ -180,7 +197,7 @@ public final class ShizukuAudioUserService extends IShizukuAudioService.Stub {
         monitor = "MONITOR: IAudioService Binder • records=" + targets.size() + " • cadence=" + cadence + "ms";
         lastSnapshot = formatSnapshot(targets);
 
-        Set<Integer> eligible = new HashSet<>();
+        Set<Integer> eligibleSessions = new HashSet<>();
         List<String> active = new ArrayList<>();
         int silenced = 0;
 
@@ -191,34 +208,38 @@ public final class ShizukuAudioUserService extends IShizukuAudioService.Stub {
                 continue;
             }
 
-            eligible.add(target.session);
+            eligibleSessions.add(target.session);
+
+            // Learn the real app UID from the same Binder recording monitor that already worked
+            // for Roblox. The AudioPolicy remains registered for this UID after the session closes,
+            // so the next recorder starts directly on the ClearMic PCM injector.
+            aiBridge.ensureTarget(target.uid, target.packageName, target.source);
+
             boolean inheritedNs = hasEffect(target.effects, "noise suppress", "noise_suppress", "ns");
             boolean inheritedAec = hasEffect(target.effects, "acoustic echo", "acoustic_echo", "aec");
             boolean inheritedAgc = hasEffect(target.effects, "automatic gain", "automatic_gain", "agc");
             String verifiedVendor = sourceDefaults.verifiedVendorEffects(target.effects);
 
-            StringBuilder verified = new StringBuilder();
-            if (inheritedNs) verified.append("NS");
-            if (inheritedAec) appendEffect(verified, "AEC");
-            if (inheritedAgc) appendEffect(verified, "AGC");
-            if (!verifiedVendor.isEmpty()) appendEffect(verified, "VENDOR");
+            StringBuilder chain = new StringBuilder();
+            if (inheritedNs) chain.append("NS");
+            if (inheritedAec) appendEffect(chain, "AEC");
+            if (inheritedAgc) appendEffect(chain, "AGC");
+            if (!verifiedVendor.isEmpty()) appendEffect(chain, "VENDOR");
+            if (aiBridge.isRunningFor(target.uid)) appendEffect(chain, "AI_PCM");
 
             String targetLabel = target.label()
                     + (target.effects.isEmpty() ? "" : " effects=" + target.effects)
                     + (inheritedNs ? " DEFAULT_NS=IN_CHAIN" : "")
-                    + (!verifiedVendor.isEmpty() ? " VENDOR=" + verifiedVendor : "")
-                    + (verified.length() > 0 ? " VERIFIED=" + verified : " VERIFIED=none");
+                    + (aiBridge.isRunningFor(target.uid) ? " AI_INJECTOR=ACTIVE" : "")
+                    + (chain.length() > 0 ? " VERIFIED=" + chain : " VERIFIED=none");
             active.add(targetLabel);
 
-            String sessionKey = sessionKey(target);
+            String key = sessionKey(target);
             if (inheritedNs) {
-                if (verifiedHistory.add(sessionKey)) protectedSessions++;
-                if ((inheritedAec || inheritedAgc || !verifiedVendor.isEmpty()) && advancedHistory.add(sessionKey)) {
-                    advancedSessions++;
-                }
-                if (failedHistory.remove(sessionKey) && failedSessions > 0) failedSessions--;
+                if (verifiedHistory.add(key)) protectedSessions++;
+                failedHistory.remove(key);
                 lastProtectedPackage = target.packageName.isEmpty() ? "uid:" + target.uid : target.packageName;
-                lastVerifiedChain = verified.length() == 0 ? "NS" : verified.toString();
+                lastVerifiedChain = chain.length() == 0 ? "NS" : chain.toString();
             } else {
                 synchronized (lock) {
                     SessionNoiseEffectInstaller.Handle current = effects.get(target.session);
@@ -233,7 +254,7 @@ public final class ShizukuAudioUserService extends IShizukuAudioService.Stub {
                     int currentAttempts = attempts.containsKey(target.session) ? attempts.get(target.session) : 0;
                     SessionNoiseEffectInstaller.Handle handle = effects.get(target.session);
                     if (currentAttempts >= 4 && (handle == null || !handle.hasWorkingNs())) {
-                        if (failedHistory.add(sessionKey)) failedSessions++;
+                        if (failedHistory.add(key)) failedSessions++;
                     }
                 }
             }
@@ -241,7 +262,7 @@ public final class ShizukuAudioUserService extends IShizukuAudioService.Stub {
 
         synchronized (lock) {
             List<Integer> stale = new ArrayList<>();
-            for (Integer session : effects.keySet()) if (!eligible.contains(session)) stale.add(session);
+            for (Integer session : effects.keySet()) if (!eligibleSessions.contains(session)) stale.add(session);
             for (Integer session : stale) {
                 SessionNoiseEffectInstaller.Handle handle = effects.remove(session);
                 attempts.remove(session);
@@ -251,27 +272,25 @@ public final class ShizukuAudioUserService extends IShizukuAudioService.Stub {
 
         if (!enabled) return !targets.isEmpty();
         if (active.isEmpty()) {
-            status = "ENABLED • profile=" + profile + " • no eligible unsilenced mic session"
-                    + (silenced > 0 ? " • silenced sessions=" + silenced : "");
+            status = "ENABLED • profile=" + profile + " • waiting for external mic session"
+                    + (silenced > 0 ? " • silenced=" + silenced : "")
+                    + " • " + aiBridge.status();
             return !targets.isEmpty();
         }
 
-        String effectSummary = effectSummary();
-        String targetSummary = String.join(" | ", active)
-                + (effectSummary.isEmpty() ? "" : " • " + effectSummary);
+        String targetSummary = String.join(" | ", active);
         lastExternal = "LAST_EXTERNAL: " + targetSummary;
-        status = "ACTIVE • profile=" + profile + " • targets=" + active.size() + " • " + targetSummary;
+        status = "ACTIVE • profile=" + profile + " • targets=" + active.size()
+                + " • " + aiBridge.status();
         return true;
     }
 
-    private void resetSessionHealth() {
+    private void resetHealth() {
         synchronized (lock) {
             verifiedHistory.clear();
-            advancedHistory.clear();
             failedHistory.clear();
         }
         protectedSessions = 0;
-        advancedSessions = 0;
         failedSessions = 0;
         lastProtectedPackage = "—";
         lastVerifiedChain = "—";
@@ -286,13 +305,13 @@ public final class ShizukuAudioUserService extends IShizukuAudioService.Stub {
         return "PROTECTION: " + state
                 + " • protected=" + protectedSessions
                 + " • failed=" + failedSessions
-                + " • advanced=" + advancedSessions
                 + " • last=" + lastProtectedPackage
                 + " • chain=" + lastVerifiedChain;
     }
 
     private boolean eligible(AudioRecordingSessionMonitor.Target target) {
-        if (target.session <= 0) return false;
+        if (target.session <= 0 || target.uid <= 0) return false;
+        if (target.uid == Process.SHELL_UID) return false; // ClearMic injector's physical mic capture
         if (CLEARMIC_PACKAGE.equals(target.packageName)) return false;
         int source = target.source;
         return source == MediaRecorder.AudioSource.DEFAULT
@@ -310,29 +329,13 @@ public final class ShizukuAudioUserService extends IShizukuAudioService.Stub {
     private static boolean hasEffect(String effectsText, String... names) {
         if (effectsText == null || effectsText.isEmpty()) return false;
         String value = effectsText.toLowerCase(Locale.ROOT);
-        for (String name : names) {
-            if (value.contains(name.toLowerCase(Locale.ROOT))) return true;
-        }
+        for (String name : names) if (value.contains(name.toLowerCase(Locale.ROOT))) return true;
         return false;
     }
 
     private static void appendEffect(StringBuilder out, String value) {
         if (out.length() > 0) out.append('+');
         out.append(value);
-    }
-
-    private String effectSummary() {
-        synchronized (lock) {
-            StringBuilder out = new StringBuilder();
-            for (Map.Entry<Integer, SessionNoiseEffectInstaller.Handle> entry : effects.entrySet()) {
-                if (out.length() > 0) out.append(" | ");
-                int count = attempts.containsKey(entry.getKey()) ? attempts.get(entry.getKey()) : 0;
-                out.append("session=").append(entry.getKey())
-                        .append(" try=").append(count)
-                        .append(' ').append(entry.getValue().summary);
-            }
-            return out.toString();
-        }
     }
 
     private String readSnapshot() {
@@ -347,7 +350,7 @@ public final class ShizukuAudioUserService extends IShizukuAudioService.Stub {
     }
 
     private String formatSnapshot(List<AudioRecordingSessionMonitor.Target> targets) {
-        StringBuilder out = new StringBuilder(monitor).append("\nrecordings=").append(targets.size());
+        StringBuilder out = new StringBuilder("recordings=").append(targets.size());
         for (AudioRecordingSessionMonitor.Target target : targets) {
             out.append("\n• pkg=").append(target.packageName.isEmpty() ? "—" : target.packageName)
                     .append(" uid=").append(target.uid)
@@ -373,11 +376,11 @@ public final class ShizukuAudioUserService extends IShizukuAudioService.Stub {
             process = new ProcessBuilder("/system/bin/sh", "-c", command)
                     .redirectErrorStream(true)
                     .start();
-            final java.lang.Process running = process;
+            final java.lang.Process runningProcess = process;
             FutureTask<String> reader = new FutureTask<>(() -> {
                 StringBuilder out = new StringBuilder();
                 try (BufferedReader input = new BufferedReader(
-                        new InputStreamReader(running.getInputStream(), StandardCharsets.UTF_8))) {
+                        new InputStreamReader(runningProcess.getInputStream(), StandardCharsets.UTF_8))) {
                     char[] buffer = new char[4096];
                     int count;
                     while ((count = input.read(buffer)) >= 0 && out.length() < MAX_OUTPUT_CHARS) {
@@ -404,7 +407,7 @@ public final class ShizukuAudioUserService extends IShizukuAudioService.Stub {
         Throwable current = error;
         while (current.getCause() != null && current.getCause() != current) current = current.getCause();
         String message = current.getMessage() == null ? "" : current.getMessage().replace('\n', ' ').trim();
-        if (message.length() > 120) message = message.substring(0, 120);
-        return current.getClass().getSimpleName() + (message.isEmpty() ? "" : ":" + message);
+        if (message.length() > 160) message = message.substring(0, 160);
+        return current.getClass().getSimpleName() + (message.isEmpty() ? "" : ": " + message);
     }
 }
