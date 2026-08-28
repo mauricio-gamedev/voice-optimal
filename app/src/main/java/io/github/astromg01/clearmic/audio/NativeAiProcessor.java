@@ -7,11 +7,12 @@ import java.io.File;
 /**
  * Small streaming JNI wrapper used by the Shizuku AudioPolicy injector.
  *
- * Unlike NativeAudioBridge this class does not open a microphone. It owns one VoiceDsp
- * instance and processes caller-provided 48 kHz mono 10 ms / 480-sample PCM16 frames.
+ * Unlike NativeAudioBridge this class does not open a microphone. It owns one streaming
+ * RNNoise processor and processes caller-provided 48 kHz mono 10 ms / 480-sample PCM16 frames.
  */
 public final class NativeAiProcessor implements AutoCloseable {
     public static final int FRAME_SAMPLES = 480;
+    private static final String LIBRARY = "clearmic_ai_stream";
 
     private static final Object LOAD_LOCK = new Object();
     private static volatile boolean loadAttempted;
@@ -22,7 +23,7 @@ public final class NativeAiProcessor implements AutoCloseable {
 
     public NativeAiProcessor(Context context) {
         if (!ensureLoaded(context)) {
-            throw new IllegalStateException("clearmic_audio load failed: " + loadError);
+            throw new IllegalStateException(LIBRARY + " load failed: " + loadError);
         }
         handle = nativeCreateProcessor();
         if (handle == 0L) throw new IllegalStateException("nativeCreateProcessor returned 0");
@@ -34,7 +35,7 @@ public final class NativeAiProcessor implements AutoCloseable {
             if (loadAttempted) return loaded;
             loadAttempted = true;
             try {
-                System.loadLibrary("clearmic_audio");
+                System.loadLibrary(LIBRARY);
                 loaded = true;
                 loadError = "none";
                 return true;
@@ -43,7 +44,7 @@ public final class NativeAiProcessor implements AutoCloseable {
                     if (context == null || context.getApplicationInfo() == null) throw first;
                     String dir = context.getApplicationInfo().nativeLibraryDir;
                     if (dir == null || dir.isEmpty()) throw first;
-                    File library = new File(dir, "libclearmic_audio.so");
+                    File library = new File(dir, "lib" + LIBRARY + ".so");
                     System.load(library.getAbsolutePath());
                     loaded = true;
                     loadError = "none";
@@ -64,7 +65,7 @@ public final class NativeAiProcessor implements AutoCloseable {
     /**
      * Processes exactly one 10 ms frame in place.
      * stats[0..3] = AI active, VAD, RNNoise smoothed ms, effective AI profile.
-     * Returns 1 when RNNoise was applied, 0 when VoiceDsp fallback was used, negative on error.
+     * Returns 1 when RNNoise was applied, 0 when the lightweight fallback was used, negative on error.
      */
     public int process(short[] frame, int profile, float[] stats) {
         if (handle == 0L || frame == null || frame.length != FRAME_SAMPLES) return -1;
