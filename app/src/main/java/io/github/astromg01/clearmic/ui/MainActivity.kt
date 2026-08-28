@@ -162,7 +162,7 @@ class MainActivity : ComponentActivity() {
             ) {
                 Text("ClearMic", style = MaterialTheme.typography.headlineLarge)
                 Text(
-                    "Milestone 4.2 • Game session bridge • ${BuildConfig.VERSION_NAME}",
+                    "Milestone 5 • ClearMic AI V1 • ${BuildConfig.VERSION_NAME}",
                     style = MaterialTheme.typography.labelLarge,
                     color = MaterialTheme.colorScheme.primary,
                 )
@@ -216,6 +216,8 @@ class MainActivity : ComponentActivity() {
                         Text("AGC Android: ${if (stats.automaticGainEnabled) "ON" else "OFF"}")
                     }
                 }
+
+                AiEnginePanel()
 
                 Card(modifier = Modifier.fillMaxWidth()) {
                     Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -299,7 +301,7 @@ class MainActivity : ComponentActivity() {
 
                 Spacer(Modifier.height(4.dp))
                 Text(
-                    "O alpha12 corrige o handoff entre o motor local e o Game Bridge: o AAudio precisa parar de verdade antes de o daemon Shizuku assumir o monitoramento das sessões do jogo. Enquanto o Game Bridge estiver ativo, a captura local fica bloqueada para evitar disputa pelo microfone.",
+                    "Alpha19 adiciona RNNoise como motor neural local com perfis Natural, Balanceado e Forte. O Game Voice Protection system-wide continua separado nesta etapa; a prioridade é validar qualidade, custo por frame e XRuns antes de levar PCM customizado para a rota dos jogos.",
                     style = MaterialTheme.typography.bodyMedium,
                 )
             }
